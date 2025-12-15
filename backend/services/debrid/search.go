@@ -1,0 +1,293 @@
+package debrid
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"novastream/config"
+	"novastream/models"
+)
+
+// userSettingsProvider retrieves per-user settings.
+type userSettingsProvider interface {
+	Get(userID string) (*models.UserSettings, error)
+}
+
+// SearchOptions mirrors the indexer search contract but is scoped for debrid providers.
+type SearchOptions struct {
+	Query           string
+	Categories      []string
+	MaxResults      int
+	IMDBID          string   // Optional IMDB ID to bypass metadata search
+	MediaType       string   // Optional: "movie" or "series" - helps with filtering
+	Year            int      // Optional: Release year - helps with filtering
+	AlternateTitles []string // Optional: alternate or foreign titles for fuzzy filtering
+	UserID          string   // Optional: user ID for per-user filtering settings
+}
+
+// SearchService coordinates queries against configured debrid providers.
+type SearchService struct {
+	cfg          *config.Manager
+	scrapers     []Scraper
+	userSettings userSettingsProvider
+}
+
+// NewSearchService constructs a new debrid search service.
+func NewSearchService(cfg *config.Manager, scrapers ...Scraper) *SearchService {
+	if len(scrapers) == 0 {
+		scrapers = []Scraper{NewTorrentioScraper(nil)}
+	}
+	return &SearchService{
+		cfg:      cfg,
+		scrapers: scrapers,
+	}
+}
+
+// SetUserSettingsProvider sets the user settings provider for per-user filtering.
+func (s *SearchService) SetUserSettingsProvider(provider userSettingsProvider) {
+	s.userSettings = provider
+}
+
+// getEffectiveFilterSettings returns the filtering settings to use for a search.
+// If a userID is provided and the user has custom settings, those are returned.
+// Otherwise, falls back to global settings.
+func (s *SearchService) getEffectiveFilterSettings(userID string, globalSettings config.Settings) models.FilterSettings {
+	// Default to global settings
+	filterSettings := models.FilterSettings{
+		MaxSizeMovieGB:   globalSettings.Filtering.MaxSizeMovieGB,
+		MaxSizeEpisodeGB: globalSettings.Filtering.MaxSizeEpisodeGB,
+		ExcludeHdr:       globalSettings.Filtering.ExcludeHdr,
+		PrioritizeHdr:    globalSettings.Filtering.PrioritizeHdr,
+		FilterOutTerms:   globalSettings.Filtering.FilterOutTerms,
+	}
+
+	// Check for per-user settings
+	if userID != "" && s.userSettings != nil {
+		userSettings, err := s.userSettings.Get(userID)
+		if err != nil {
+			log.Printf("[debrid] failed to get user settings for %s: %v", userID, err)
+		} else if userSettings != nil {
+			log.Printf("[debrid] using per-user filtering settings for user %s", userID)
+			filterSettings = userSettings.Filtering
+		}
+	}
+
+	return filterSettings
+}
+
+// Search executes scraper-backed torrent discovery across enabled debrid providers.
+func (s *SearchService) Search(ctx context.Context, opts SearchOptions) ([]models.NZBResult, error) {
+	if s == nil || s.cfg == nil {
+		return nil, errors.New("debrid search service not configured")
+	}
+
+	settings, err := s.cfg.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load settings: %w", err)
+	}
+
+	// Get effective filtering settings (per-user if available, otherwise global)
+	filterSettings := s.getEffectiveFilterSettings(opts.UserID, settings)
+
+	if !hasActiveDebridProviders(settings.Streaming.DebridProviders) {
+		return []models.NZBResult{}, nil
+	}
+
+	parsed := ParseQuery(opts.Query)
+
+	// Use explicit metadata if provided, otherwise use parsed values
+	if opts.MediaType != "" {
+		parsed.MediaType = MediaType(strings.ToLower(opts.MediaType))
+	}
+	if opts.Year > 0 {
+		parsed.Year = opts.Year
+	}
+
+	log.Printf("[debrid] Search called with Query=%q, IMDBID=%q, MediaType=%q, Year=%d, UserID=%q", opts.Query, opts.IMDBID, opts.MediaType, opts.Year, opts.UserID)
+	req := SearchRequest{
+		Query:      opts.Query,
+		Categories: append([]string(nil), opts.Categories...),
+		MaxResults: opts.MaxResults,
+		Parsed:     parsed,
+		IMDBID:     opts.IMDBID,
+	}
+	log.Printf("[debrid] Using metadata: Title=%q, Season=%d, Episode=%d, Year=%d, MediaType=%s",
+		parsed.Title, parsed.Season, parsed.Episode, parsed.Year, parsed.MediaType)
+
+	var (
+		aggregate []models.NZBResult
+		errs      []error
+		seenGuids = make(map[string]struct{})
+	)
+
+	for _, scraper := range s.scrapers {
+		if scraper == nil {
+			continue
+		}
+		start := time.Now()
+		results, scrapeErr := scraper.Search(ctx, req)
+		if scrapeErr != nil {
+			log.Printf("[debrid] %s search failed: %v", scraper.Name(), scrapeErr)
+			errs = append(errs, fmt.Errorf("%s scraper: %w", scraper.Name(), scrapeErr))
+			continue
+		}
+		log.Printf("[debrid] %s search produced %d results for %q in %s", scraper.Name(), len(results), parsed.Title, time.Since(start).Round(10*time.Millisecond))
+		for _, res := range results {
+			nzb := normalizeScrapeResult(res)
+			decorateResultWithParsedMetadata(&nzb, req.Parsed)
+			if nzb.GUID == "" {
+				nzb.GUID = fmt.Sprintf("%s:%s:%d", scraper.Name(), strings.ToLower(res.InfoHash), res.FileIndex)
+			}
+			if nzb.Indexer == "" {
+				nzb.Indexer = scraper.Name()
+			}
+			if _, dup := seenGuids[nzb.GUID]; dup {
+				continue
+			}
+			seenGuids[nzb.GUID] = struct{}{}
+			aggregate = append(aggregate, nzb)
+		}
+	}
+
+	if len(aggregate) == 0 && len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+
+	// Apply parsed-based filtering if appropriate (using per-user filter settings)
+	if ShouldFilter(parsed) {
+		log.Printf("[debrid] Applying filter with title=%q, year=%d, mediaType=%s", parsed.Title, parsed.Year, parsed.MediaType)
+		filterOpts := FilterOptions{
+			ExpectedTitle:    parsed.Title,
+			ExpectedYear:     parsed.Year,
+			MediaType:        parsed.MediaType,
+			MaxSizeMovieGB:   filterSettings.MaxSizeMovieGB,
+			MaxSizeEpisodeGB: filterSettings.MaxSizeEpisodeGB,
+			ExcludeHdr:       filterSettings.ExcludeHdr,
+			PrioritizeHdr:    filterSettings.PrioritizeHdr,
+			AlternateTitles:  opts.AlternateTitles,
+			FilterOutTerms:   filterSettings.FilterOutTerms,
+		}
+		aggregate = FilterResults(aggregate, filterOpts)
+	}
+
+	// Apply MaxResults limit after filtering
+	if opts.MaxResults > 0 && len(aggregate) > opts.MaxResults {
+		aggregate = aggregate[:opts.MaxResults]
+	}
+
+	return aggregate, nil
+}
+
+func hasActiveDebridProviders(providers []config.DebridProviderSettings) bool {
+	for _, provider := range providers {
+		if !provider.Enabled {
+			continue
+		}
+		if strings.TrimSpace(provider.APIKey) == "" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func normalizeScrapeResult(res ScrapeResult) models.NZBResult {
+	result := models.NZBResult{
+		Title:       safeString(res.Title),
+		Indexer:     safeString(res.Indexer),
+		GUID:        "",
+		Link:        safeString(res.Magnet),
+		DownloadURL: safeString(res.Magnet),
+		SizeBytes:   res.SizeBytes,
+		Categories:  nil,
+		Attributes:  map[string]string{},
+		ServiceType: models.ServiceTypeDebrid,
+	}
+
+	if res.InfoHash != "" {
+		lowered := strings.ToLower(res.InfoHash)
+		result.Attributes["infoHash"] = lowered
+		result.GUID = fmt.Sprintf("magnet:%s", lowered)
+	}
+	if res.FileIndex >= 0 {
+		result.Attributes["fileIndex"] = fmt.Sprintf("%d", res.FileIndex)
+	}
+	if res.Provider != "" {
+		result.Attributes["tracker"] = res.Provider
+	}
+	if res.Resolution != "" {
+		result.Attributes["resolution"] = res.Resolution
+	}
+	if res.Seeders > 0 {
+		result.Attributes["seeders"] = fmt.Sprintf("%d", res.Seeders)
+	}
+	if len(res.Languages) > 0 {
+		result.Attributes["languages"] = strings.Join(res.Languages, ",")
+	}
+	if res.MetaName != "" {
+		result.Attributes["titleName"] = res.MetaName
+	}
+	if res.MetaID != "" {
+		result.Attributes["titleId"] = res.MetaID
+	}
+	if res.Source != "" {
+		result.Attributes["source"] = res.Source
+	}
+	if result.GUID == "" && result.Link != "" {
+		result.GUID = result.Link
+	}
+	for key, value := range res.Attributes {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, exists := result.Attributes[key]; exists {
+			continue
+		}
+		result.Attributes[key] = value
+	}
+	return result
+}
+
+func safeString(value string) string {
+	return strings.TrimSpace(value)
+}
+
+func decorateResultWithParsedMetadata(result *models.NZBResult, parsed ParsedQuery) {
+	if result == nil {
+		return
+	}
+	if result.Attributes == nil {
+		result.Attributes = map[string]string{}
+	}
+
+	if parsed.Title != "" {
+		if _, ok := result.Attributes["targetTitle"]; !ok {
+			result.Attributes["targetTitle"] = strings.TrimSpace(parsed.Title)
+		}
+	}
+	if parsed.MediaType != "" {
+		if _, ok := result.Attributes["targetMediaType"]; !ok {
+			result.Attributes["targetMediaType"] = string(parsed.MediaType)
+		}
+	}
+	if parsed.Season > 0 {
+		if _, ok := result.Attributes["targetSeason"]; !ok {
+			result.Attributes["targetSeason"] = fmt.Sprintf("%d", parsed.Season)
+		}
+	}
+	if parsed.Episode > 0 {
+		if _, ok := result.Attributes["targetEpisode"]; !ok {
+			result.Attributes["targetEpisode"] = fmt.Sprintf("%d", parsed.Episode)
+		}
+	}
+	if parsed.Season > 0 && parsed.Episode > 0 {
+		code := fmt.Sprintf("S%02dE%02d", parsed.Season, parsed.Episode)
+		if _, ok := result.Attributes["targetEpisodeCode"]; !ok {
+			result.Attributes["targetEpisodeCode"] = code
+		}
+	}
+}

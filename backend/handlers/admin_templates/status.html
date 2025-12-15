@@ -1,0 +1,443 @@
+{{template "base" .}}
+
+{{define "title"}}Status - strmr Admin{{end}}
+
+{{define "content"}}
+<div class="page-header" style="display: flex; align-items: center; justify-content: space-between;">
+    <div>
+        <h1>Server Status</h1>
+        <p>Real-time monitoring of your strmr server</p>
+    </div>
+    <button class="btn btn-secondary" onclick="refreshStatus()">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="1 4 1 10 7 10"/>
+            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+        </svg>
+        Refresh
+    </button>
+</div>
+
+<!-- Connection Status -->
+<div class="grid grid-4" style="margin-bottom: 1.5rem;">
+    <div class="stat-card">
+        <div class="stat-label">Backend</div>
+        <div class="stat-value" id="backendStatus">
+            {{if .Status.BackendReachable}}
+            <span class="status-badge online"><span class="status-dot"></span> Online</span>
+            {{else}}
+            <span class="status-badge offline"><span class="status-dot"></span> Offline</span>
+            {{end}}
+        </div>
+        <div class="stat-subtext">http://{{.Settings.Server.Host}}:{{.Settings.Server.Port}}</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-label">Active Streams</div>
+        <div class="stat-value" id="activeStreamCount">-</div>
+        <div class="stat-subtext" id="streamSubtext">Loading...</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-label">Service Mode</div>
+        <div class="stat-value" style="font-size: 1rem;">{{.Settings.Streaming.ServiceMode}}</div>
+        <div class="stat-subtext">Priority: {{.Settings.Filtering.ServicePriority}}</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-label">Transmux</div>
+        <div class="stat-value" style="font-size: 1rem;">
+            {{if .Settings.Transmux.Enabled}}
+            <span class="status-badge online"><span class="status-dot"></span> Enabled</span>
+            {{else}}
+            <span class="status-badge offline"><span class="status-dot"></span> Disabled</span>
+            {{end}}
+        </div>
+        <div class="stat-subtext">{{.Settings.Transmux.FFmpegPath}}</div>
+    </div>
+</div>
+
+<!-- Active Streams -->
+<div class="card" style="margin-bottom: 1.5rem;">
+    <div class="card-header">
+        <h2>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Active Streams
+        </h2>
+        <button class="btn btn-sm btn-secondary" onclick="refreshStreams()">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="1 4 1 10 7 10"/>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+            Refresh
+        </button>
+    </div>
+    <div class="card-body">
+        <div id="streamsContainer">
+            <div style="display: flex; align-items: center; justify-content: center; padding: 2rem; color: var(--text-muted);">
+                <div class="spinner" style="margin-right: 0.5rem;"></div>
+                Loading streams...
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Service Health -->
+<div class="grid grid-2" style="margin-bottom: 1.5rem;">
+    <div class="card">
+        <div class="card-header">
+            <h2>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                </svg>
+                Usenet Providers
+            </h2>
+        </div>
+        <div class="card-body">
+            <div id="usenetProviders">
+                {{if .Settings.Usenet}}
+                    {{range .Settings.Usenet}}
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 0; border-bottom: 1px solid var(--border);">
+                        <div>
+                            <div style="font-weight: 500;">{{.Name}}</div>
+                            <div style="font-size: 0.8125rem; color: var(--text-muted);">
+                                {{.Host}}:{{.Port}} {{if .SSL}}(SSL){{end}}
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <div style="text-align: right;">
+                                <div style="font-weight: 500;">{{.Connections}}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">connections</div>
+                            </div>
+                            {{if .Enabled}}
+                            <span class="status-badge online"><span class="status-dot"></span> Active</span>
+                            {{else}}
+                            <span class="status-badge offline"><span class="status-dot"></span> Disabled</span>
+                            {{end}}
+                        </div>
+                    </div>
+                    {{end}}
+                {{else}}
+                    <p style="color: var(--text-muted); text-align: center; padding: 1rem;">No providers configured</p>
+                {{end}}
+            </div>
+            <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+                <div style="display: flex; justify-content: space-between; color: var(--text-secondary); font-size: 0.875rem;">
+                    <span>Total Connections:</span>
+                    <span style="font-weight: 600; color: var(--text-primary);">{{totalConnections .Settings.Usenet}}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h2>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+                </svg>
+                Debrid Providers
+            </h2>
+        </div>
+        <div class="card-body">
+            <div id="debridProviders">
+                {{if .Settings.Streaming.DebridProviders}}
+                    {{range .Settings.Streaming.DebridProviders}}
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 0; border-bottom: 1px solid var(--border);">
+                        <div>
+                            <div style="font-weight: 500;">{{.Name}}</div>
+                            <div style="font-size: 0.8125rem; color: var(--text-muted);">
+                                {{.Provider}}
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <div style="text-align: right;">
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">
+                                    {{if .APIKey}}API Key Set{{else}}No API Key{{end}}
+                                </div>
+                            </div>
+                            {{if .Enabled}}
+                            <span class="status-badge online"><span class="status-dot"></span> Active</span>
+                            {{else}}
+                            <span class="status-badge offline"><span class="status-dot"></span> Disabled</span>
+                            {{end}}
+                        </div>
+                    </div>
+                    {{end}}
+                {{else}}
+                    <p style="color: var(--text-muted); text-align: center; padding: 1rem;">No providers configured</p>
+                {{end}}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Endpoint Health -->
+<div class="card" style="margin-bottom: 1.5rem;">
+    <div class="card-header">
+        <h2>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+            </svg>
+            Endpoint Health
+        </h2>
+        <button class="btn btn-sm btn-secondary" onclick="testEndpoints()">Test All</button>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Endpoint</th>
+                        <th>Method</th>
+                        <th>Status</th>
+                        <th>Response Time</th>
+                    </tr>
+                </thead>
+                <tbody id="endpointResults">
+                    <tr>
+                        <td>/health</td>
+                        <td>GET</td>
+                        <td id="health-status">-</td>
+                        <td id="health-time">-</td>
+                    </tr>
+                    <tr>
+                        <td>/api/settings</td>
+                        <td>GET</td>
+                        <td id="settings-status">-</td>
+                        <td id="settings-time">-</td>
+                    </tr>
+                    <tr>
+                        <td>/api/discover/new</td>
+                        <td>GET</td>
+                        <td id="discover-status">-</td>
+                        <td id="discover-time">-</td>
+                    </tr>
+                    <tr>
+                        <td>/api/users</td>
+                        <td>GET</td>
+                        <td id="users-status">-</td>
+                        <td id="users-time">-</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Configuration Summary -->
+<div class="card">
+    <div class="card-header">
+        <h2>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            Configuration Summary
+        </h2>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Setting</th>
+                        <th>Value</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Server Port</td>
+                        <td>{{.Settings.Server.Port}}</td>
+                        <td style="color: var(--text-muted);">HTTP API port</td>
+                    </tr>
+                    <tr>
+                        <td>Download Workers</td>
+                        <td>{{.Settings.Streaming.MaxDownloadWorkers}}</td>
+                        <td style="color: var(--text-muted);">Maximum concurrent download workers</td>
+                    </tr>
+                    <tr>
+                        <td>Cache Size</td>
+                        <td>{{.Settings.Streaming.MaxCacheSizeMB}} MB</td>
+                        <td style="color: var(--text-muted);">Maximum cache size</td>
+                    </tr>
+                    <tr>
+                        <td>WebDAV</td>
+                        <td>
+                            {{if .Settings.WebDAV.Enabled}}
+                            <span class="status-badge online"><span class="status-dot"></span> Enabled</span>
+                            {{else}}
+                            <span class="status-badge offline"><span class="status-dot"></span> Disabled</span>
+                            {{end}}
+                        </td>
+                        <td style="color: var(--text-muted);">{{.Settings.WebDAV.Prefix}}</td>
+                    </tr>
+                    <tr>
+                        <td>Metadata Cache TTL</td>
+                        <td>{{.Settings.Cache.MetadataTTLHours}} hours</td>
+                        <td style="color: var(--text-muted);">Metadata cache duration</td>
+                    </tr>
+                    <tr>
+                        <td>Live TV Playlist</td>
+                        <td>
+                            {{if .Settings.Live.PlaylistURL}}
+                            <span class="status-badge online"><span class="status-dot"></span> Configured</span>
+                            {{else}}
+                            <span class="status-badge offline"><span class="status-dot"></span> Not Set</span>
+                            {{end}}
+                        </td>
+                        <td style="color: var(--text-muted);">M3U playlist for Live TV</td>
+                    </tr>
+                    <tr>
+                        <td>Indexers</td>
+                        <td>{{countEnabledIndexers .Settings.Indexers}} / {{len .Settings.Indexers}}</td>
+                        <td style="color: var(--text-muted);">Active indexers</td>
+                    </tr>
+                    <tr>
+                        <td>Torrent Scrapers</td>
+                        <td>{{countEnabledScrapers .Settings.TorrentScrapers}} / {{len .Settings.TorrentScrapers}}</td>
+                        <td style="color: var(--text-muted);">Active torrent scrapers</td>
+                    </tr>
+                    <tr>
+                        <td>Content Filtering</td>
+                        <td>
+                            {{if hasFiltering .Settings.Filtering}}
+                            <span class="status-badge warning"><span class="status-dot"></span> Active</span>
+                            {{else}}
+                            <span class="status-badge online"><span class="status-dot"></span> None</span>
+                            {{end}}
+                        </td>
+                        <td style="color: var(--text-muted);">
+                            {{if .Settings.Filtering.FilterOutTerms}}
+                            Filtering: {{join .Settings.Filtering.FilterOutTerms ", "}}
+                            {{end}}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+    const pin = {{json .Settings.Server.PIN}};
+    
+    async function testEndpoint(endpoint, elementPrefix) {
+        const statusEl = document.getElementById(elementPrefix+'-status');
+        const timeEl = document.getElementById(elementPrefix+'-time');
+        statusEl.innerHTML = '<div class="spinner" style="width: 14px; height: 14px;"></div>';
+        timeEl.textContent = '-';
+        try {
+            const start = performance.now();
+            const headers = endpoint !== 'health' && pin ? {'X-PIN': pin} : {};
+            const url = endpoint === 'health' ? '/health' : '/api/' + endpoint.replace('settings', 'settings').replace('discover', 'discover/new');
+            const response = await fetch(url, {headers});
+            const duration = Math.round(performance.now() - start);
+            timeEl.textContent = duration + 'ms';
+            if (response.ok) {
+                statusEl.innerHTML = '<span class="status-badge online"><span class="status-dot"></span> OK</span>';
+            } else {
+                statusEl.innerHTML = '<span class="status-badge warning"><span class="status-dot"></span> ' + response.status + '</span>';
+            }
+        } catch (e) {
+            statusEl.innerHTML = '<span class="status-badge offline"><span class="status-dot"></span> Error</span>';
+            timeEl.textContent = '-';
+        }
+    }
+
+    async function testEndpoints() {
+        await Promise.all([
+            testEndpoint('health', 'health'),
+            testEndpoint('settings', 'settings'),
+            testEndpoint('discover', 'discover'),
+            testEndpoint('users', 'users')
+        ]);
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function formatDuration(seconds) {
+        if (!seconds || seconds < 0) return '-';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return mins + ':' + secs.toString().padStart(2, '0');
+    }
+
+    function getTimeSince(isoDate) {
+        if (!isoDate) return '-';
+        const date = new Date(isoDate);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        if (diffMins < 1) return 'just now';
+        if (diffMins < 60) return diffMins + 'm ago';
+        const diffHours = Math.floor(diffMins / 60);
+        if (diffHours < 24) return diffHours + 'h ago';
+        return Math.floor(diffHours / 24) + 'd ago';
+    }
+
+    async function refreshStreams() {
+        const container = document.getElementById('streamsContainer');
+        const countEl = document.getElementById('activeStreamCount');
+        const subtextEl = document.getElementById('streamSubtext');
+        try {
+            const response = await fetch('/admin/api/streams');
+            const data = await response.json();
+            if (data.error) {
+                countEl.textContent = '-';
+                subtextEl.textContent = 'Backend unavailable';
+                container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);"><p>Could not fetch streams</p><p style="font-size: 0.75rem; margin-top: 0.5rem;">'+data.error+'</p></div>';
+                return;
+            }
+            const streams = data.streams || [];
+            countEl.textContent = streams.length;
+            const totalBandwidth = streams.reduce((sum, s) => sum + (s.bytes_streamed || 0), 0);
+            subtextEl.textContent = totalBandwidth > 0 ? formatBytes(totalBandwidth) + ' total' : 'No active streams';
+            if (streams.length === 0) {
+                container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);"><svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom: 1rem; opacity: 0.5;"><polygon points="5 3 19 12 5 21 5 3"/></svg><p>No active streams</p></div>';
+                return;
+            }
+            container.innerHTML = '<div class="table-container"><table><thead><tr><th>File</th><th>Type</th><th>Client IP</th><th>Duration</th><th>Transferred</th><th>Started</th></tr></thead><tbody>' +
+                streams.map(stream => '<tr><td><div style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="'+(stream.path || stream.original_path || '-')+'">'+(stream.filename || (stream.path ? stream.path.split('/').pop() : '-'))+'</div>'+(stream.has_dv ? '<span class="status-badge" style="background: rgba(139, 92, 246, 0.1); color: #8b5cf6; font-size: 0.625rem; padding: 0.125rem 0.375rem;">DV</span>' : '')+(stream.has_hdr ? '<span class="status-badge" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b; font-size: 0.625rem; padding: 0.125rem 0.375rem;">HDR</span>' : '')+'</td><td><span class="status-badge '+(stream.type === 'hls' ? 'online' : 'warning')+'">'+(stream.type || 'direct')+'</span></td><td style="font-family: monospace; font-size: 0.8125rem;">'+(stream.client_ip || '-')+'</td><td>'+formatDuration(stream.duration)+'</td><td>'+formatBytes(stream.bytes_streamed || 0)+'</td><td style="font-size: 0.8125rem; color: var(--text-muted);">'+getTimeSince(stream.created_at)+'</td></tr>').join('') +
+                '</tbody></table></div>';
+        } catch (e) {
+            countEl.textContent = '-';
+            subtextEl.textContent = 'Error';
+            container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);"><p>Failed to load streams</p><p style="font-size: 0.75rem;">'+e.message+'</p></div>';
+        }
+    }
+
+    async function refreshStatus() {
+        try {
+            const status = await apiCall('/admin/api/status');
+            const backendEl = document.getElementById('backendStatus');
+            if (status.backend_reachable) {
+                backendEl.innerHTML = '<span class="status-badge online"><span class="status-dot"></span> Online</span>';
+            } else {
+                backendEl.innerHTML = '<span class="status-badge offline"><span class="status-dot"></span> Offline</span>';
+            }
+            await refreshStreams();
+            showToast('Status refreshed');
+        } catch (e) {
+            showToast('Failed to refresh status', 'error');
+        }
+    }
+
+    setInterval(() => { refreshStreams(); }, 10000);
+
+    document.addEventListener('DOMContentLoaded', () => {
+        testEndpoints();
+        refreshStreams();
+    });
+</script>
+{{end}}

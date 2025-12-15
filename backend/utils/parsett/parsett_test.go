@@ -1,0 +1,53 @@
+package parsett
+
+import (
+	"testing"
+)
+
+func TestParseTitle(t *testing.T) {
+	testCases := []struct {
+		name          string
+		input         string
+		expectedTitle string
+		expectedYear  int
+	}{
+		{
+			name:          "Movie with year and quality",
+			input:         "The.Matrix.1999.1080p.BluRay.x264-SPARKS",
+			expectedTitle: "The Matrix",
+			expectedYear:  1999,
+		},
+		{
+			name:          "TV Show with season and episode",
+			input:         "The.Simpsons.S01E01.1080p.BluRay.x265.HEVC.10bit.AAC.5.1.Tigole",
+			expectedTitle: "The Simpsons",
+			expectedYear:  0, // No year in this title
+		},
+		{
+			name:          "Simple movie title",
+			input:         "Inception.2010.720p.BluRay.x264",
+			expectedTitle: "Inception",
+			expectedYear:  2010,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ParseTitle(tc.input)
+			if err != nil {
+				t.Fatalf("ParseTitle failed: %v", err)
+			}
+
+			if result.Title != tc.expectedTitle {
+				t.Errorf("Expected title '%s', got '%s'", tc.expectedTitle, result.Title)
+			}
+
+			if result.Year != tc.expectedYear {
+				t.Errorf("Expected year %d, got %d", tc.expectedYear, result.Year)
+			}
+
+			// Log the full result for inspection
+			t.Logf("Full result: %+v", result)
+		})
+	}
+}

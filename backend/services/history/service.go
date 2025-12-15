@@ -1,0 +1,1921 @@
+package history
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"novastream/models"
+)
+
+var (
+	ErrStorageDirRequired = errors.New("storage directory not provided")
+	ErrUserIDRequired     = errors.New("user id is required")
+	ErrSeriesIDRequired   = errors.New("series id is required")
+)
+
+// MetadataService provides series and movie metadata for continue watching generation.
+type MetadataService interface {
+	SeriesDetails(ctx context.Context, req models.SeriesDetailsQuery) (*models.SeriesDetails, error)
+	SeriesInfo(ctx context.Context, req models.SeriesDetailsQuery) (*models.Title, error)
+	MovieDetails(ctx context.Context, req models.MovieDetailsQuery) (*models.Title, error)
+}
+
+// cachedSeriesMetadata holds cached series details with expiration.
+type cachedSeriesMetadata struct {
+	details   *models.SeriesDetails
+	cachedAt  time.Time
+	expiresAt time.Time
+}
+
+// cachedMovieMetadata holds cached movie details with expiration.
+type cachedMovieMetadata struct {
+	details   *models.Title
+	cachedAt  time.Time
+	expiresAt time.Time
+}
+
+// cachedSeriesInfo holds cached lightweight series info with expiration.
+type cachedSeriesInfo struct {
+	info      *models.Title
+	cachedAt  time.Time
+	expiresAt time.Time
+}
+
+// cachedContinueWatching holds cached continue watching response with expiration.
+type cachedContinueWatching struct {
+	items     []models.SeriesWatchState
+	cachedAt  time.Time
+	expiresAt time.Time
+}
+
+// Service persists watch history for all content (movies, series, episodes).
+type Service struct {
+	mu                    sync.RWMutex
+	path                  string
+	watchHistPath         string
+	playbackProgressPath  string
+	states                map[string]map[string]models.SeriesWatchState // Deprecated: kept for migration only
+	watchHistory          map[string]map[string]models.WatchHistoryItem // Manual watch tracking (all media)
+	playbackProgress      map[string]map[string]models.PlaybackProgress // userID -> mediaKey -> progress
+	metadataService       MetadataService
+	metadataCache         map[string]*cachedSeriesMetadata // seriesID -> metadata (full details)
+	seriesInfoCache       map[string]*cachedSeriesInfo     // seriesID -> lightweight info
+	movieMetadataCache    map[string]*cachedMovieMetadata  // movieID -> metadata
+	metadataCacheTTL      time.Duration
+	continueWatchingCache map[string]*cachedContinueWatching // userID -> continue watching
+	continueWatchingTTL   time.Duration
+}
+
+// NewService constructs a history service backed by a JSON file on disk.
+func NewService(storageDir string) (*Service, error) {
+	if strings.TrimSpace(storageDir) == "" {
+		return nil, ErrStorageDirRequired
+	}
+
+	if err := os.MkdirAll(storageDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create history dir: %w", err)
+	}
+
+	svc := &Service{
+		path:                  filepath.Join(storageDir, "watch_history.json"),
+		watchHistPath:         filepath.Join(storageDir, "watched_items.json"),
+		playbackProgressPath:  filepath.Join(storageDir, "playback_progress.json"),
+		states:                make(map[string]map[string]models.SeriesWatchState),
+		watchHistory:          make(map[string]map[string]models.WatchHistoryItem),
+		playbackProgress:      make(map[string]map[string]models.PlaybackProgress),
+		metadataCache:         make(map[string]*cachedSeriesMetadata),
+		seriesInfoCache:       make(map[string]*cachedSeriesInfo),
+		movieMetadataCache:    make(map[string]*cachedMovieMetadata),
+		metadataCacheTTL:      24 * time.Hour, // Cache metadata for 24 hours - ensures new episodes are detected daily
+		continueWatchingCache: make(map[string]*cachedContinueWatching),
+		continueWatchingTTL:   10 * time.Minute, // Cache continue watching response for 10 minutes - reduces frequent rebuilds
+	}
+
+	if err := svc.load(); err != nil {
+		return nil, err
+	}
+
+	if err := svc.loadWatchHistory(); err != nil {
+		return nil, err
+	}
+
+	if err := svc.loadPlaybackProgress(); err != nil {
+		return nil, err
+	}
+
+	return svc, nil
+}
+
+// SetMetadataService sets the metadata service for continue watching generation.
+func (s *Service) SetMetadataService(metadataService MetadataService) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.metadataService = metadataService
+}
+
+// RecordEpisode notes that the user has started watching the supplied episode.
+// This now records to watch history instead of the old states map.
+func (s *Service) RecordEpisode(userID string, payload models.EpisodeWatchPayload) (models.SeriesWatchState, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return models.SeriesWatchState{}, ErrUserIDRequired
+	}
+
+	seriesID := strings.TrimSpace(payload.SeriesID)
+	if seriesID == "" {
+		return models.SeriesWatchState{}, ErrSeriesIDRequired
+	}
+
+	episode := normaliseEpisode(payload.Episode)
+
+	// Record episode to watch history
+	watched := true
+	update := models.WatchHistoryUpdate{
+		MediaType:     "episode",
+		ItemID:        seriesID, // Will be enhanced with season/episode in key
+		Name:          episode.Title,
+		Year:          payload.Year,
+		Watched:       &watched,
+		ExternalIDs:   payload.ExternalIDs,
+		SeasonNumber:  episode.SeasonNumber,
+		EpisodeNumber: episode.EpisodeNumber,
+		SeriesID:      seriesID,
+		SeriesName:    payload.SeriesTitle,
+	}
+
+	if _, err := s.UpdateWatchHistory(userID, update); err != nil {
+		return models.SeriesWatchState{}, err
+	}
+
+	// Invalidate continue watching cache for this user since they watched something new
+	s.mu.Lock()
+	delete(s.continueWatchingCache, userID)
+	s.mu.Unlock()
+
+	// Build and return current state from watch history
+	ctx := context.Background()
+	states, err := s.buildContinueWatchingFromHistory(ctx, userID)
+	if err != nil {
+		return models.SeriesWatchState{}, err
+	}
+
+	// Cache the newly built result
+	s.mu.Lock()
+	s.continueWatchingCache[userID] = &cachedContinueWatching{
+		items:     states,
+		cachedAt:  time.Now(),
+		expiresAt: time.Now().Add(s.continueWatchingTTL),
+	}
+	s.mu.Unlock()
+
+	// Find the state for this series
+	for _, state := range states {
+		if state.SeriesID == seriesID {
+			return state, nil
+		}
+	}
+
+	// If not in continue watching (e.g., no next episode), build a minimal state
+	return models.SeriesWatchState{
+		SeriesID:    seriesID,
+		SeriesTitle: payload.SeriesTitle,
+		PosterURL:   payload.PosterURL,
+		BackdropURL: payload.BackdropURL,
+		Year:        payload.Year,
+		ExternalIDs: payload.ExternalIDs,
+		LastWatched: episode,
+		NextEpisode: payload.NextEpisode,
+		UpdatedAt:   time.Now().UTC(),
+		WatchedEpisodes: map[string]models.EpisodeReference{
+			episodeKey(episode.SeasonNumber, episode.EpisodeNumber): episode,
+		},
+	}, nil
+}
+
+// GetSeriesWatchState returns the watch state for a specific series, or nil if not found.
+func (s *Service) GetSeriesWatchState(userID, seriesID string) (*models.SeriesWatchState, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrUserIDRequired
+	}
+
+	seriesID = strings.TrimSpace(seriesID)
+	if seriesID == "" {
+		return nil, ErrSeriesIDRequired
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if perUser, ok := s.states[userID]; ok {
+		if state, ok := perUser[seriesID]; ok {
+			return &state, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// ListContinueWatching returns series where a follow-up episode is available.
+// This is now generated from watch history instead of explicit RecordEpisode calls.
+// Results are cached for a short TTL (10 min) to reduce frequent rebuilds,
+// but metadata is cached for 24 hours to detect new episodes/seasons.
+func (s *Service) ListContinueWatching(userID string) ([]models.SeriesWatchState, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrUserIDRequired
+	}
+
+	// Check cache first
+	s.mu.RLock()
+	cached, exists := s.continueWatchingCache[userID]
+	s.mu.RUnlock()
+
+	if exists && time.Now().Before(cached.expiresAt) {
+		return cached.items, nil
+	}
+
+	// Cache miss or expired - rebuild
+	ctx := context.Background()
+	items, err := s.buildContinueWatchingFromHistory(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the result
+	s.mu.Lock()
+	s.continueWatchingCache[userID] = &cachedContinueWatching{
+		items:     items,
+		cachedAt:  time.Now(),
+		expiresAt: time.Now().Add(s.continueWatchingTTL),
+	}
+	s.mu.Unlock()
+
+	return items, nil
+}
+
+// buildContinueWatchingFromHistory generates continue watching list from watch history and playback progress.
+// Prioritizes in-progress episodes (partially watched) over completed episodes.
+func (s *Service) buildContinueWatchingFromHistory(ctx context.Context, userID string) ([]models.SeriesWatchState, error) {
+	s.mu.RLock()
+	metadataSvc := s.metadataService
+	s.mu.RUnlock()
+
+	if metadataSvc == nil {
+		// Metadata service not available, return empty list
+		return []models.SeriesWatchState{}, nil
+	}
+
+	// Get playback progress for in-progress items
+	progressItems, err := s.ListPlaybackProgress(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get all watch history items
+	items, err := s.ListWatchHistory(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build set of hidden series IDs from progress items
+	hiddenSeriesIDs := make(map[string]bool)
+	for _, prog := range progressItems {
+		if prog.HiddenFromContinueWatching {
+			// Add both the itemID (for movies) and seriesID (for episodes)
+			if prog.ItemID != "" {
+				hiddenSeriesIDs[prog.ItemID] = true
+			}
+			if prog.SeriesID != "" {
+				hiddenSeriesIDs[prog.SeriesID] = true
+			}
+		}
+	}
+
+	// Map of seriesID -> in-progress episode (0-90% watched)
+	// Note: Check both MediaType=="episode" AND presence of season/episode numbers
+	// (in case mediaType wasn't properly set but it has episode data)
+	inProgressBySeriesCache := make(map[string]*models.PlaybackProgress)
+	for i := range progressItems {
+		prog := &progressItems[i]
+
+		// Skip hidden items
+		if prog.HiddenFromContinueWatching {
+			continue
+		}
+
+		isEpisode := prog.MediaType == "episode" || (prog.SeasonNumber > 0 && prog.EpisodeNumber > 0)
+
+		// Try to infer series ID if missing (from itemId or external IDs)
+		seriesID := prog.SeriesID
+		if seriesID == "" && isEpisode {
+			// Try to extract from itemId (format: "seriesId:S01E02")
+			parts := strings.Split(prog.ItemID, ":")
+			if len(parts) >= 2 && strings.HasPrefix(parts[len(parts)-1], "S") {
+				// ItemId is like "tvdb:123:S01E02", extract everything before the :S pattern
+				for i := len(parts) - 1; i >= 0; i-- {
+					if strings.HasPrefix(parts[i], "S") && len(parts[i]) > 1 {
+						seriesID = strings.Join(parts[:i], ":")
+						break
+					}
+				}
+			} else {
+				// ItemId might just be the series ID
+				seriesID = prog.ItemID
+			}
+		}
+
+		if isEpisode && seriesID != "" && prog.PercentWatched < 90 {
+			// Keep the most recently updated in-progress episode per series
+			existing := inProgressBySeriesCache[seriesID]
+			if existing == nil || prog.UpdatedAt.After(existing.UpdatedAt) {
+				// Store with inferred seriesID if it was missing
+				if prog.SeriesID == "" {
+					prog.SeriesID = seriesID
+				}
+				inProgressBySeriesCache[seriesID] = prog
+			}
+		}
+	}
+
+	// Filter to watched episodes from the past 365 days
+	cutoffDate := time.Now().UTC().AddDate(-1, 0, 0) // 365 days ago
+	seriesEpisodes := make(map[string][]models.WatchHistoryItem)
+	seriesInfo := make(map[string]models.WatchHistoryItem) // Track series metadata
+
+	for _, item := range items {
+		if item.MediaType == "episode" && item.Watched && item.SeriesID != "" {
+			// Skip hidden series
+			if hiddenSeriesIDs[item.SeriesID] {
+				continue
+			}
+			if item.WatchedAt.After(cutoffDate) {
+				seriesEpisodes[item.SeriesID] = append(seriesEpisodes[item.SeriesID], item)
+				if _, exists := seriesInfo[item.SeriesID]; !exists {
+					seriesInfo[item.SeriesID] = item
+				}
+			}
+		}
+	}
+
+	// Also consider series with only in-progress items (no completed episodes)
+	for seriesID, prog := range inProgressBySeriesCache {
+		if _, exists := seriesInfo[seriesID]; !exists && prog.SeriesName != "" {
+			// Create a minimal watch history item for metadata purposes
+			seriesInfo[seriesID] = models.WatchHistoryItem{
+				SeriesID:      prog.SeriesID,
+				SeriesName:    prog.SeriesName,
+				ExternalIDs:   prog.ExternalIDs,
+				Year:          prog.Year,
+				SeasonNumber:  prog.SeasonNumber,
+				EpisodeNumber: prog.EpisodeNumber,
+			}
+		}
+	}
+
+	// Build continue watching for each series
+	var continueWatching []models.SeriesWatchState
+
+	for seriesID := range seriesInfo {
+		info := seriesInfo[seriesID]
+		episodes := seriesEpisodes[seriesID] // May be empty if only in-progress
+		inProgress := inProgressBySeriesCache[seriesID]
+
+		var state models.SeriesWatchState
+		var nextEpisode *models.EpisodeReference
+
+		// Priority 1: In-progress episode (resume watching)
+		// For in-progress, we don't need full series details since we already have episode info
+		if inProgress != nil {
+			// The in-progress episode IS the next episode to watch
+			nextEpisode = &models.EpisodeReference{
+				SeasonNumber:  inProgress.SeasonNumber,
+				EpisodeNumber: inProgress.EpisodeNumber,
+				Title:         inProgress.EpisodeName,
+			}
+
+			// For in-progress, use the in-progress episode as both last and next
+			state = models.SeriesWatchState{
+				SeriesID:    seriesID,
+				SeriesTitle: inProgress.SeriesName,
+				Year:        inProgress.Year,
+				ExternalIDs: inProgress.ExternalIDs,
+				UpdatedAt:   inProgress.UpdatedAt,
+				LastWatched: *nextEpisode,
+				NextEpisode: nextEpisode,
+			}
+
+			// Get lightweight series info (poster, backdrop, external IDs only - no episodes)
+			seriesInfo, err := s.getSeriesInfoWithCache(ctx, seriesID, info.SeriesName, info.ExternalIDs)
+			if err == nil && seriesInfo != nil {
+				// Add poster/backdrop from metadata
+				if seriesInfo.Poster != nil {
+					state.PosterURL = seriesInfo.Poster.URL
+				}
+				if seriesInfo.Backdrop != nil {
+					state.BackdropURL = seriesInfo.Backdrop.URL
+				}
+
+				// Enrich external IDs from metadata (prioritize metadata over history)
+				if state.ExternalIDs == nil {
+					state.ExternalIDs = make(map[string]string)
+				}
+				if seriesInfo.IMDBID != "" {
+					state.ExternalIDs["imdb"] = seriesInfo.IMDBID
+				}
+				if seriesInfo.TMDBID > 0 {
+					state.ExternalIDs["tmdb"] = fmt.Sprintf("%d", seriesInfo.TMDBID)
+				}
+				if seriesInfo.TVDBID > 0 {
+					state.ExternalIDs["tvdb"] = fmt.Sprintf("%d", seriesInfo.TVDBID)
+				}
+
+				// Use metadata year if available
+				if seriesInfo.Year > 0 {
+					state.Year = seriesInfo.Year
+				}
+			}
+		} else if len(episodes) > 0 {
+			// Priority 2: Next unwatched episode after most recently completed
+			// For this case we DO need full series details to find the next episode
+			// Sort episodes by watch date (most recent first)
+			sort.Slice(episodes, func(i, j int) bool {
+				return episodes[i].WatchedAt.After(episodes[j].WatchedAt)
+			})
+
+			mostRecentEpisode := episodes[0]
+
+			// Get full series details (with all episodes) to find next unwatched
+			seriesDetails, err := s.getSeriesMetadataWithCache(ctx, seriesID, info.SeriesName, info.ExternalIDs)
+			if err != nil {
+				// Skip this series if metadata unavailable
+				continue
+			}
+
+			// Find next unwatched episode
+			nextEpisode = s.findNextUnwatchedEpisode(seriesDetails, mostRecentEpisode, episodes)
+			if nextEpisode == nil {
+				// No next episode available, skip this series
+				continue
+			}
+
+			state = models.SeriesWatchState{
+				SeriesID:    seriesID,
+				SeriesTitle: mostRecentEpisode.SeriesName,
+				Year:        mostRecentEpisode.Year,
+				ExternalIDs: mostRecentEpisode.ExternalIDs,
+				UpdatedAt:   mostRecentEpisode.WatchedAt,
+				LastWatched: s.convertToEpisodeRef(mostRecentEpisode),
+				NextEpisode: nextEpisode,
+			}
+
+			// Build watched episodes map
+			watchedMap := make(map[string]models.EpisodeReference)
+			for _, ep := range episodes {
+				key := episodeKey(ep.SeasonNumber, ep.EpisodeNumber)
+				watchedMap[key] = s.convertToEpisodeRef(ep)
+			}
+			state.WatchedEpisodes = watchedMap
+
+			// Enrich with metadata from series details
+			if seriesDetails != nil {
+				// Add poster/backdrop from metadata
+				if seriesDetails.Title.Poster != nil {
+					state.PosterURL = seriesDetails.Title.Poster.URL
+				}
+				if seriesDetails.Title.Backdrop != nil {
+					state.BackdropURL = seriesDetails.Title.Backdrop.URL
+				}
+
+				// Enrich external IDs from metadata (prioritize metadata over history)
+				if state.ExternalIDs == nil {
+					state.ExternalIDs = make(map[string]string)
+				}
+				if seriesDetails.Title.IMDBID != "" {
+					state.ExternalIDs["imdb"] = seriesDetails.Title.IMDBID
+				}
+				if seriesDetails.Title.TMDBID > 0 {
+					state.ExternalIDs["tmdb"] = fmt.Sprintf("%d", seriesDetails.Title.TMDBID)
+				}
+				if seriesDetails.Title.TVDBID > 0 {
+					state.ExternalIDs["tvdb"] = fmt.Sprintf("%d", seriesDetails.Title.TVDBID)
+				}
+
+				// Use metadata year if available
+				if seriesDetails.Title.Year > 0 {
+					state.Year = seriesDetails.Title.Year
+				}
+			}
+		} else {
+			// No episodes and no in-progress (shouldn't happen)
+			continue
+		}
+
+		continueWatching = append(continueWatching, state)
+	}
+
+	// Add in-progress movies to continue watching
+	for i := range progressItems {
+		prog := &progressItems[i]
+
+		// Skip hidden movies
+		if prog.HiddenFromContinueWatching {
+			continue
+		}
+
+		// Only include movies with 0-90% progress (resume watching)
+		if prog.MediaType == "movie" && prog.PercentWatched > 0 && prog.PercentWatched < 90 {
+			// Enrich with metadata first (poster, backdrop, overview, etc)
+			var movieDetails *models.Title
+			if details, err := s.getMovieMetadataWithCache(ctx, prog.ItemID, prog.MovieName, prog.Year, prog.ExternalIDs); err == nil && details != nil {
+				movieDetails = details
+			}
+
+			// Build the movie state with metadata
+			movieState := models.SeriesWatchState{
+				SeriesID:    prog.ItemID,
+				SeriesTitle: prog.MovieName,
+				Year:        prog.Year,
+				ExternalIDs: prog.ExternalIDs,
+				UpdatedAt:   prog.UpdatedAt,
+				// For movies, use LastWatched to store movie info with metadata overview
+				LastWatched: models.EpisodeReference{
+					Title:    prog.MovieName,
+					Overview: "", // Will be populated from metadata below
+				},
+				NextEpisode: nil, // nil indicates this is a movie resume, not a series
+			}
+
+			// Apply metadata enrichment if available
+			if movieDetails != nil {
+				// Add poster/backdrop from metadata
+				if movieDetails.Poster != nil {
+					movieState.PosterURL = movieDetails.Poster.URL
+				}
+				if movieDetails.Backdrop != nil {
+					movieState.BackdropURL = movieDetails.Backdrop.URL
+				}
+
+				// Use metadata overview (the key fix - populate overview from metadata)
+				if movieDetails.Overview != "" {
+					movieState.LastWatched.Overview = movieDetails.Overview
+				}
+
+				// Enrich external IDs from metadata (prioritize metadata over progress)
+				if movieState.ExternalIDs == nil {
+					movieState.ExternalIDs = make(map[string]string)
+				}
+				if movieDetails.IMDBID != "" {
+					movieState.ExternalIDs["imdb"] = movieDetails.IMDBID
+				}
+				if movieDetails.TMDBID > 0 {
+					movieState.ExternalIDs["tmdb"] = fmt.Sprintf("%d", movieDetails.TMDBID)
+				}
+				if movieDetails.TVDBID > 0 {
+					movieState.ExternalIDs["tvdb"] = fmt.Sprintf("%d", movieDetails.TVDBID)
+				}
+
+				// Use metadata year if available and more accurate
+				if movieDetails.Year > 0 {
+					movieState.Year = movieDetails.Year
+				}
+
+				// Use metadata title if available (better localization)
+				if movieDetails.Name != "" {
+					movieState.SeriesTitle = movieDetails.Name
+					movieState.LastWatched.Title = movieDetails.Name
+				}
+			}
+
+			continueWatching = append(continueWatching, movieState)
+		}
+	}
+
+	// Sort by most recently updated (in-progress items will naturally sort first if more recent)
+	sort.Slice(continueWatching, func(i, j int) bool {
+		if continueWatching[i].UpdatedAt.Equal(continueWatching[j].UpdatedAt) {
+			return continueWatching[i].SeriesID < continueWatching[j].SeriesID
+		}
+		return continueWatching[i].UpdatedAt.After(continueWatching[j].UpdatedAt)
+	})
+
+	return continueWatching, nil
+}
+
+// getMovieMetadataWithCache retrieves movie metadata with caching.
+func (s *Service) getMovieMetadataWithCache(ctx context.Context, movieID, movieName string, year int, externalIDs map[string]string) (*models.Title, error) {
+	s.mu.RLock()
+	cached, exists := s.movieMetadataCache[movieID]
+	metadataSvc := s.metadataService
+	s.mu.RUnlock()
+
+	// Check cache validity
+	if exists && time.Now().Before(cached.expiresAt) {
+		return cached.details, nil
+	}
+
+	if metadataSvc == nil {
+		return nil, fmt.Errorf("metadata service not available")
+	}
+
+	// Build query from external IDs or parse from movieID
+	query := models.MovieDetailsQuery{
+		TitleID: movieID,
+		Name:    movieName,
+		Year:    year,
+	}
+
+	// Parse IDs from movieID first (more reliable than external IDs from history)
+	// Format: "tmdb:movie:617126" or "tvdb:movie:123456"
+	parts := strings.Split(movieID, ":")
+	if len(parts) >= 2 {
+		switch parts[0] {
+		case "tvdb":
+			// For TVDB movie IDs like "tvdb:movie:123456", extract the TVDB ID
+			if len(parts) >= 3 {
+				if id, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+					query.TVDBID = id
+				}
+			} else if len(parts) >= 2 {
+				if id, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+					query.TVDBID = id
+				}
+			}
+		case "tmdb":
+			// For TMDB movie IDs like "tmdb:movie:617126", extract the TMDB ID
+			if len(parts) >= 3 {
+				if id, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+					query.TMDBID = id
+				}
+			}
+		}
+	}
+
+	// Fallback to external IDs from playback progress to improve accuracy.
+	// Always read TMDB/TVDB/IMDB values if they are available, but do not overwrite
+	// IDs that were already parsed from the primary movie ID.
+	if externalIDs != nil {
+		if query.TMDBID == 0 {
+			if tmdbID, ok := externalIDs["tmdb"]; ok {
+				if id, err := strconv.ParseInt(tmdbID, 10, 64); err == nil {
+					query.TMDBID = id
+				}
+			}
+		}
+		if query.TVDBID == 0 {
+			if tvdbID, ok := externalIDs["tvdb"]; ok {
+				if id, err := strconv.ParseInt(tvdbID, 10, 64); err == nil {
+					query.TVDBID = id
+				}
+			}
+		}
+		if query.IMDBID == "" {
+			if imdbID, ok := externalIDs["imdb"]; ok {
+				query.IMDBID = imdbID
+			}
+		}
+	}
+
+	// Fetch from metadata service
+	details, err := metadataSvc.MovieDetails(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the result
+	s.mu.Lock()
+	s.movieMetadataCache[movieID] = &cachedMovieMetadata{
+		details:   details,
+		cachedAt:  time.Now(),
+		expiresAt: time.Now().Add(s.metadataCacheTTL),
+	}
+	s.mu.Unlock()
+
+	return details, nil
+}
+
+// getSeriesMetadataWithCache retrieves series metadata with caching.
+func (s *Service) getSeriesMetadataWithCache(ctx context.Context, seriesID, seriesName string, externalIDs map[string]string) (*models.SeriesDetails, error) {
+	s.mu.RLock()
+	cached, exists := s.metadataCache[seriesID]
+	metadataSvc := s.metadataService
+	s.mu.RUnlock()
+
+	// Check cache validity
+	if exists && time.Now().Before(cached.expiresAt) {
+		log.Printf("[history] using cached series metadata seriesId=%s name=%q hasPoster=%v hasBackdrop=%v",
+			seriesID, seriesName, cached.details.Title.Poster != nil, cached.details.Title.Backdrop != nil)
+		return cached.details, nil
+	}
+
+	log.Printf("[history] fetching fresh series metadata seriesId=%s name=%q", seriesID, seriesName)
+
+	if metadataSvc == nil {
+		return nil, fmt.Errorf("metadata service not available")
+	}
+
+	// Build query from external IDs or parse from seriesID
+	query := models.SeriesDetailsQuery{
+		TitleID: seriesID,
+		Name:    seriesName,
+	}
+
+	// Parse IDs from seriesID first (more reliable than external IDs from history)
+	// Format: "tmdb:tv:2190" or "tvdb:123456"
+	parts := strings.Split(seriesID, ":")
+	if len(parts) >= 2 {
+		switch parts[0] {
+		case "tvdb":
+			if id, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+				query.TVDBID = id
+			}
+		case "tmdb":
+			// For TMDB IDs like "tmdb:tv:2190", extract the TMDB ID
+			if len(parts) >= 3 {
+				if id, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+					query.TMDBID = id
+				}
+			}
+		}
+	}
+
+	// If still no ID, fallback to external IDs from watch history
+	// Prefer TMDB over TVDB as TMDB is more reliable for finding correct language version
+	if query.TVDBID == 0 && query.TMDBID == 0 && externalIDs != nil {
+		// Try TMDB ID first
+		if tmdbID, ok := externalIDs["tmdb"]; ok {
+			if id, err := strconv.ParseInt(tmdbID, 10, 64); err == nil {
+				query.TMDBID = id
+			}
+		}
+		// Only use TVDB ID from history if no TMDB ID available
+		// Note: TVDB IDs from history might be incorrect (e.g., foreign language dubs)
+		if query.TMDBID == 0 {
+			if tvdbID, ok := externalIDs["tvdb"]; ok {
+				if id, err := strconv.ParseInt(tvdbID, 10, 64); err == nil {
+					query.TVDBID = id
+				}
+			}
+		}
+	}
+
+	// Fetch from metadata service
+	details, err := metadataSvc.SeriesDetails(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the result
+	s.mu.Lock()
+	s.metadataCache[seriesID] = &cachedSeriesMetadata{
+		details:   details,
+		cachedAt:  time.Now(),
+		expiresAt: time.Now().Add(s.metadataCacheTTL),
+	}
+	s.mu.Unlock()
+
+	return details, nil
+}
+
+// getSeriesInfoWithCache retrieves lightweight series info (poster, backdrop, IDs) with caching.
+func (s *Service) getSeriesInfoWithCache(ctx context.Context, seriesID, seriesName string, externalIDs map[string]string) (*models.Title, error) {
+	s.mu.RLock()
+	cached, exists := s.seriesInfoCache[seriesID]
+	metadataSvc := s.metadataService
+	s.mu.RUnlock()
+
+	// Check cache validity
+	if exists && time.Now().Before(cached.expiresAt) {
+		return cached.info, nil
+	}
+
+	if metadataSvc == nil {
+		return nil, fmt.Errorf("metadata service not available")
+	}
+
+	// Build query from external IDs or parse from seriesID
+	query := models.SeriesDetailsQuery{
+		TitleID: seriesID,
+		Name:    seriesName,
+	}
+
+	// Parse IDs from seriesID first (more reliable than external IDs from history)
+	// Format: "tmdb:tv:2190" or "tvdb:123456"
+	parts := strings.Split(seriesID, ":")
+	if len(parts) >= 2 {
+		switch parts[0] {
+		case "tvdb":
+			if id, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+				query.TVDBID = id
+			}
+		case "tmdb":
+			// For TMDB IDs like "tmdb:tv:2190", extract the TMDB ID
+			if len(parts) >= 3 {
+				if id, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+					query.TMDBID = id
+				}
+			}
+		}
+	}
+
+	// If still no ID, fallback to external IDs from watch history
+	if query.TVDBID == 0 && query.TMDBID == 0 && externalIDs != nil {
+		// Try TMDB ID first
+		if tmdbID, ok := externalIDs["tmdb"]; ok {
+			if id, err := strconv.ParseInt(tmdbID, 10, 64); err == nil {
+				query.TMDBID = id
+			}
+		}
+		// Only use TVDB ID from history if no TMDB ID available
+		if query.TMDBID == 0 {
+			if tvdbID, ok := externalIDs["tvdb"]; ok {
+				if id, err := strconv.ParseInt(tvdbID, 10, 64); err == nil {
+					query.TVDBID = id
+				}
+			}
+		}
+	}
+
+	// Fetch lightweight info from metadata service (no episodes)
+	info, err := metadataSvc.SeriesInfo(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the result
+	s.mu.Lock()
+	s.seriesInfoCache[seriesID] = &cachedSeriesInfo{
+		info:      info,
+		cachedAt:  time.Now(),
+		expiresAt: time.Now().Add(s.metadataCacheTTL),
+	}
+	s.mu.Unlock()
+
+	return info, nil
+}
+
+// findNextUnwatchedEpisode finds the next unwatched episode after the most recently watched one.
+func (s *Service) findNextUnwatchedEpisode(
+	seriesDetails *models.SeriesDetails,
+	lastWatched models.WatchHistoryItem,
+	watchedEpisodes []models.WatchHistoryItem,
+) *models.EpisodeReference {
+	if seriesDetails == nil {
+		return nil
+	}
+
+	// Build set of watched episodes for O(1) lookup
+	watchedSet := make(map[string]bool)
+	for _, ep := range watchedEpisodes {
+		key := episodeKey(ep.SeasonNumber, ep.EpisodeNumber)
+		watchedSet[key] = true
+	}
+
+	// Flatten all episodes in series order
+	type orderedEpisode struct {
+		season  int
+		episode int
+		details models.SeriesEpisode
+	}
+	var allEpisodes []orderedEpisode
+
+	for _, season := range seriesDetails.Seasons {
+		for _, ep := range season.Episodes {
+			allEpisodes = append(allEpisodes, orderedEpisode{
+				season:  ep.SeasonNumber,
+				episode: ep.EpisodeNumber,
+				details: ep,
+			})
+		}
+	}
+
+	// Sort by season, then episode number
+	sort.Slice(allEpisodes, func(i, j int) bool {
+		if allEpisodes[i].season != allEpisodes[j].season {
+			return allEpisodes[i].season < allEpisodes[j].season
+		}
+		return allEpisodes[i].episode < allEpisodes[j].episode
+	})
+
+	// Find the last watched episode in the list, then scan forward for next unwatched
+	foundLast := false
+	for _, ep := range allEpisodes {
+		if ep.season == lastWatched.SeasonNumber && ep.episode == lastWatched.EpisodeNumber {
+			foundLast = true
+			continue
+		}
+
+		if foundLast {
+			key := episodeKey(ep.season, ep.episode)
+			if !watchedSet[key] {
+				// Found next unwatched episode
+				return &models.EpisodeReference{
+					SeasonNumber:   ep.details.SeasonNumber,
+					EpisodeNumber:  ep.details.EpisodeNumber,
+					EpisodeID:      ep.details.ID,
+					Title:          ep.details.Name,
+					Overview:       ep.details.Overview,
+					RuntimeMinutes: ep.details.Runtime,
+					AirDate:        ep.details.AiredDate,
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// convertToEpisodeRef converts a WatchHistoryItem to an EpisodeReference.
+func (s *Service) convertToEpisodeRef(item models.WatchHistoryItem) models.EpisodeReference {
+	tvdbID := ""
+	if item.ExternalIDs != nil {
+		if id, ok := item.ExternalIDs["tvdb"]; ok {
+			tvdbID = id
+		}
+	}
+
+	return models.EpisodeReference{
+		SeasonNumber:  item.SeasonNumber,
+		EpisodeNumber: item.EpisodeNumber,
+		Title:         item.Name,
+		WatchedAt:     item.WatchedAt,
+		TvdbID:        tvdbID,
+	}
+}
+
+// enrichEpisodeFromMetadata adds metadata details to an episode reference.
+func (s *Service) enrichEpisodeFromMetadata(episodeRef *models.EpisodeReference, seriesDetails *models.SeriesDetails) {
+	if episodeRef == nil || seriesDetails == nil {
+		return
+	}
+
+	// Find the matching episode in metadata
+	for _, season := range seriesDetails.Seasons {
+		if season.Number == episodeRef.SeasonNumber {
+			for _, episode := range season.Episodes {
+				if episode.EpisodeNumber == episodeRef.EpisodeNumber {
+					// Enrich with metadata
+					if episodeRef.Title == "" {
+						episodeRef.Title = episode.Name
+					}
+					episodeRef.Overview = episode.Overview
+					episodeRef.AirDate = episode.AiredDate
+					episodeRef.RuntimeMinutes = episode.Runtime
+					if episode.TVDBID > 0 {
+						episodeRef.TvdbID = fmt.Sprintf("%d", episode.TVDBID)
+					}
+					if episodeRef.EpisodeID == "" && episode.ID != "" {
+						episodeRef.EpisodeID = episode.ID
+					}
+					return
+				}
+			}
+		}
+	}
+}
+
+func (s *Service) ensureUserLocked(userID string) map[string]models.SeriesWatchState {
+	perUser, ok := s.states[userID]
+	if !ok {
+		perUser = make(map[string]models.SeriesWatchState)
+		s.states[userID] = perUser
+	}
+	return perUser
+}
+
+func (s *Service) load() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	file, err := os.Open(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		s.states = make(map[string]map[string]models.SeriesWatchState)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open history: %w", err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return fmt.Errorf("read history: %w", err)
+	}
+	if len(data) == 0 {
+		s.states = make(map[string]map[string]models.SeriesWatchState)
+		return nil
+	}
+
+	var decoded map[string]map[string]models.SeriesWatchState
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return fmt.Errorf("decode history: %w", err)
+	}
+
+	s.states = make(map[string]map[string]models.SeriesWatchState, len(decoded))
+	for userID, perUser := range decoded {
+		cleanedUserID := strings.TrimSpace(userID)
+		if cleanedUserID == "" {
+			continue
+		}
+		perSeries := make(map[string]models.SeriesWatchState, len(perUser))
+		for seriesID, state := range perUser {
+			state = normaliseState(state)
+			perSeries[seriesID] = state
+		}
+		s.states[cleanedUserID] = perSeries
+	}
+
+	return nil
+}
+
+func (s *Service) saveLocked() error {
+	data, err := json.MarshalIndent(s.states, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode history: %w", err)
+	}
+
+	if err := os.WriteFile(s.path, data, 0o644); err != nil {
+		return fmt.Errorf("write history: %w", err)
+	}
+
+	return nil
+}
+
+func episodeKey(season, episode int) string {
+	return fmt.Sprintf("s%02de%02d", season, episode)
+}
+
+func normaliseEpisode(ref models.EpisodeReference) models.EpisodeReference {
+	if ref.SeasonNumber < 0 {
+		ref.SeasonNumber = 0
+	}
+	if ref.EpisodeNumber < 0 {
+		ref.EpisodeNumber = 0
+	}
+	ref.Title = strings.TrimSpace(ref.Title)
+	ref.Overview = strings.TrimSpace(ref.Overview)
+	ref.EpisodeID = strings.TrimSpace(ref.EpisodeID)
+	ref.TvdbID = strings.TrimSpace(ref.TvdbID)
+	if ref.WatchedAt.IsZero() {
+		ref.WatchedAt = time.Now().UTC()
+	} else {
+		ref.WatchedAt = ref.WatchedAt.UTC()
+	}
+	ref.AirDate = strings.TrimSpace(ref.AirDate)
+	if ref.RuntimeMinutes < 0 {
+		ref.RuntimeMinutes = 0
+	}
+	return ref
+}
+
+func normaliseState(state models.SeriesWatchState) models.SeriesWatchState {
+	state.SeriesID = strings.TrimSpace(state.SeriesID)
+	state.SeriesTitle = strings.TrimSpace(state.SeriesTitle)
+	state.PosterURL = strings.TrimSpace(state.PosterURL)
+	state.BackdropURL = strings.TrimSpace(state.BackdropURL)
+	if state.Year < 0 {
+		state.Year = 0
+	}
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now().UTC()
+	} else {
+		state.UpdatedAt = state.UpdatedAt.UTC()
+	}
+	state.LastWatched = normaliseEpisode(state.LastWatched)
+	if state.NextEpisode != nil {
+		next := normaliseEpisode(*state.NextEpisode)
+		state.NextEpisode = &next
+	}
+	if state.WatchedEpisodes == nil {
+		state.WatchedEpisodes = make(map[string]models.EpisodeReference)
+	} else {
+		cleaned := make(map[string]models.EpisodeReference, len(state.WatchedEpisodes))
+		for key, episode := range state.WatchedEpisodes {
+			cleaned[strings.TrimSpace(key)] = normaliseEpisode(episode)
+		}
+		state.WatchedEpisodes = cleaned
+	}
+	return state
+}
+
+// Watch History Methods (unified manual watch tracking for all media)
+
+// ListWatchHistory returns all watched items for a user.
+func (s *Service) ListWatchHistory(userID string) ([]models.WatchHistoryItem, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrUserIDRequired
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	items := make([]models.WatchHistoryItem, 0)
+	if perUser, ok := s.watchHistory[userID]; ok {
+		items = make([]models.WatchHistoryItem, 0, len(perUser))
+		for _, item := range perUser {
+			items = append(items, item)
+		}
+	}
+
+	// Sort by most recently watched
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].WatchedAt.Equal(items[j].WatchedAt) {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].WatchedAt.After(items[j].WatchedAt)
+	})
+
+	return items, nil
+}
+
+// GetWatchHistoryItem returns a specific watch history item.
+func (s *Service) GetWatchHistoryItem(userID, mediaType, itemID string) (*models.WatchHistoryItem, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrUserIDRequired
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key := makeWatchKey(mediaType, itemID)
+	if perUser, ok := s.watchHistory[userID]; ok {
+		if item, ok := perUser[key]; ok {
+			return &item, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// ToggleWatched toggles the watched status for an item (movie, series, or episode).
+func (s *Service) ToggleWatched(userID string, update models.WatchHistoryUpdate) (models.WatchHistoryItem, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return models.WatchHistoryItem{}, ErrUserIDRequired
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	perUser := s.ensureWatchHistoryUserLocked(userID)
+
+	key := makeWatchKey(update.MediaType, update.ItemID)
+	item, exists := perUser[key]
+
+	now := time.Now().UTC()
+	if !exists {
+		// Create new item marked as watched
+		item = models.WatchHistoryItem{
+			ID:        key,
+			MediaType: strings.ToLower(update.MediaType),
+			ItemID:    update.ItemID,
+			Watched:   true,
+			WatchedAt: now,
+		}
+	} else {
+		// Toggle existing item
+		item.Watched = !item.Watched
+		if item.Watched {
+			item.WatchedAt = now
+		}
+	}
+
+	// Update metadata if provided
+	if update.Name != "" {
+		item.Name = update.Name
+	}
+	if update.Year > 0 {
+		item.Year = update.Year
+	}
+	if update.ExternalIDs != nil {
+		item.ExternalIDs = update.ExternalIDs
+	}
+
+	// Episode-specific fields
+	if update.SeasonNumber > 0 {
+		item.SeasonNumber = update.SeasonNumber
+	}
+	if update.EpisodeNumber > 0 {
+		item.EpisodeNumber = update.EpisodeNumber
+	}
+	if update.SeriesID != "" {
+		item.SeriesID = update.SeriesID
+	}
+	if update.SeriesName != "" {
+		item.SeriesName = update.SeriesName
+	}
+
+	perUser[key] = item
+
+	if err := s.saveWatchHistoryLocked(); err != nil {
+		return models.WatchHistoryItem{}, err
+	}
+
+	// Clear playback progress when toggling watched status (both marking as watched and unwatched)
+	progressCleared := s.clearPlaybackProgressEntryLocked(userID, item.MediaType, item.ItemID)
+
+	// If marking an episode as watched, also clear progress for earlier episodes
+	if item.Watched && item.MediaType == "episode" && item.SeriesID != "" && item.SeasonNumber > 0 && item.EpisodeNumber > 0 {
+		if s.clearEarlierEpisodesProgressLocked(userID, item.SeriesID, item.SeasonNumber, item.EpisodeNumber) {
+			progressCleared = true
+		}
+	}
+
+	if progressCleared {
+		if err := s.savePlaybackProgressLocked(); err != nil {
+			return models.WatchHistoryItem{}, err
+		}
+	}
+
+	// Invalidate continue watching cache for this user
+	delete(s.continueWatchingCache, userID)
+
+	return item, nil
+}
+
+// UpdateWatchHistory updates or creates a watch history item.
+func (s *Service) UpdateWatchHistory(userID string, update models.WatchHistoryUpdate) (models.WatchHistoryItem, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return models.WatchHistoryItem{}, ErrUserIDRequired
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	perUser := s.ensureWatchHistoryUserLocked(userID)
+
+	key := makeWatchKey(update.MediaType, update.ItemID)
+	item, exists := perUser[key]
+
+	now := time.Now().UTC()
+	if !exists {
+		item = models.WatchHistoryItem{
+			ID:        key,
+			MediaType: strings.ToLower(update.MediaType),
+			ItemID:    update.ItemID,
+			Watched:   false,
+		}
+	}
+
+	progressCleared := false
+
+	// Update fields
+	if update.Name != "" {
+		item.Name = update.Name
+	}
+	if update.Year > 0 {
+		item.Year = update.Year
+	}
+	if update.Watched != nil {
+		item.Watched = *update.Watched
+		if *update.Watched {
+			item.WatchedAt = now
+		}
+		// Clear playback progress when watched status changes (both marking as watched and unwatched)
+		progressCleared = s.clearPlaybackProgressEntryLocked(userID, update.MediaType, update.ItemID)
+	}
+	if update.ExternalIDs != nil {
+		item.ExternalIDs = update.ExternalIDs
+	}
+
+	// Episode-specific fields
+	if update.SeasonNumber > 0 {
+		item.SeasonNumber = update.SeasonNumber
+	}
+	if update.EpisodeNumber > 0 {
+		item.EpisodeNumber = update.EpisodeNumber
+	}
+	if update.SeriesID != "" {
+		item.SeriesID = update.SeriesID
+	}
+	if update.SeriesName != "" {
+		item.SeriesName = update.SeriesName
+	}
+
+	perUser[key] = item
+
+	// If marking an episode as watched, also clear progress for earlier episodes
+	if update.Watched != nil && *update.Watched && update.MediaType == "episode" && update.SeriesID != "" && update.SeasonNumber > 0 && update.EpisodeNumber > 0 {
+		if s.clearEarlierEpisodesProgressLocked(userID, update.SeriesID, update.SeasonNumber, update.EpisodeNumber) {
+			progressCleared = true
+		}
+	}
+
+	if err := s.saveWatchHistoryLocked(); err != nil {
+		return models.WatchHistoryItem{}, err
+	}
+
+	if progressCleared {
+		if err := s.savePlaybackProgressLocked(); err != nil {
+			return models.WatchHistoryItem{}, err
+		}
+	}
+
+	// Invalidate continue watching cache for this user
+	delete(s.continueWatchingCache, userID)
+
+	return item, nil
+}
+
+// IsWatched checks if an item is marked as watched.
+func (s *Service) IsWatched(userID, mediaType, itemID string) (bool, error) {
+	item, err := s.GetWatchHistoryItem(userID, mediaType, itemID)
+	if err != nil {
+		return false, err
+	}
+	if item == nil {
+		return false, nil
+	}
+	return item.Watched, nil
+}
+
+// BulkUpdateWatchHistory marks multiple episodes as watched/unwatched in a single operation.
+func (s *Service) BulkUpdateWatchHistory(userID string, updates []models.WatchHistoryUpdate) ([]models.WatchHistoryItem, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrUserIDRequired
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	perUser := s.ensureWatchHistoryUserLocked(userID)
+	results := make([]models.WatchHistoryItem, 0, len(updates))
+	now := time.Now().UTC()
+	progressCleared := false
+
+	for _, update := range updates {
+		key := makeWatchKey(update.MediaType, update.ItemID)
+		item, exists := perUser[key]
+
+		if !exists {
+			item = models.WatchHistoryItem{
+				ID:        key,
+				MediaType: strings.ToLower(update.MediaType),
+				ItemID:    update.ItemID,
+				Watched:   false,
+			}
+		}
+
+		// Update fields
+		if update.Name != "" {
+			item.Name = update.Name
+		}
+		if update.Year > 0 {
+			item.Year = update.Year
+		}
+		if update.Watched != nil {
+			item.Watched = *update.Watched
+			if *update.Watched {
+				item.WatchedAt = now
+			}
+			// Clear playback progress when watched status changes (both marking as watched and unwatched)
+			if s.clearPlaybackProgressEntryLocked(userID, update.MediaType, update.ItemID) {
+				progressCleared = true
+			}
+		}
+		if update.ExternalIDs != nil {
+			item.ExternalIDs = update.ExternalIDs
+		}
+
+		// Episode-specific fields
+		if update.SeasonNumber > 0 {
+			item.SeasonNumber = update.SeasonNumber
+		}
+		if update.EpisodeNumber > 0 {
+			item.EpisodeNumber = update.EpisodeNumber
+		}
+		if update.SeriesID != "" {
+			item.SeriesID = update.SeriesID
+		}
+		if update.SeriesName != "" {
+			item.SeriesName = update.SeriesName
+		}
+
+		perUser[key] = item
+
+		// If marking an episode as watched, also clear progress for earlier episodes
+		if update.Watched != nil && *update.Watched && update.MediaType == "episode" && update.SeriesID != "" && update.SeasonNumber > 0 && update.EpisodeNumber > 0 {
+			if s.clearEarlierEpisodesProgressLocked(userID, update.SeriesID, update.SeasonNumber, update.EpisodeNumber) {
+				progressCleared = true
+			}
+		}
+
+		results = append(results, item)
+	}
+
+	if err := s.saveWatchHistoryLocked(); err != nil {
+		return nil, err
+	}
+
+	if progressCleared {
+		if err := s.savePlaybackProgressLocked(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Invalidate continue watching cache for this user
+	delete(s.continueWatchingCache, userID)
+
+	return results, nil
+}
+
+func (s *Service) ensureWatchHistoryUserLocked(userID string) map[string]models.WatchHistoryItem {
+	perUser, ok := s.watchHistory[userID]
+	if !ok {
+		perUser = make(map[string]models.WatchHistoryItem)
+		s.watchHistory[userID] = perUser
+	}
+	return perUser
+}
+
+func (s *Service) loadWatchHistory() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	file, err := os.Open(s.watchHistPath)
+	if errors.Is(err, os.ErrNotExist) {
+		s.watchHistory = make(map[string]map[string]models.WatchHistoryItem)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open watch history: %w", err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return fmt.Errorf("read watch history: %w", err)
+	}
+	if len(data) == 0 {
+		s.watchHistory = make(map[string]map[string]models.WatchHistoryItem)
+		return nil
+	}
+
+	// Load as map[userID][]WatchHistoryItem
+	var loaded map[string][]models.WatchHistoryItem
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return fmt.Errorf("decode watch history: %w", err)
+	}
+
+	s.watchHistory = make(map[string]map[string]models.WatchHistoryItem)
+	for userID, items := range loaded {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
+			continue
+		}
+		perUser := make(map[string]models.WatchHistoryItem, len(items))
+		for _, item := range items {
+			key := makeWatchKey(item.MediaType, item.ItemID)
+			perUser[key] = item
+		}
+		s.watchHistory[userID] = perUser
+	}
+
+	return nil
+}
+
+func (s *Service) saveWatchHistoryLocked() error {
+	// Convert to array format for storage
+	toSave := make(map[string][]models.WatchHistoryItem)
+	for userID, perUser := range s.watchHistory {
+		items := make([]models.WatchHistoryItem, 0, len(perUser))
+		for _, item := range perUser {
+			items = append(items, item)
+		}
+		// Sort by most recently watched
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].WatchedAt.Equal(items[j].WatchedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].WatchedAt.After(items[j].WatchedAt)
+		})
+		toSave[userID] = items
+	}
+
+	data, err := json.MarshalIndent(toSave, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode watch history: %w", err)
+	}
+
+	if err := os.WriteFile(s.watchHistPath, data, 0o644); err != nil {
+		return fmt.Errorf("write watch history: %w", err)
+	}
+
+	return nil
+}
+
+func makeWatchKey(mediaType, itemID string) string {
+	return strings.ToLower(mediaType) + ":" + itemID
+}
+
+// Playback Progress Methods
+
+// UpdatePlaybackProgress updates the playback progress for a media item.
+// Automatically marks items as watched when they reach 90% completion.
+func (s *Service) UpdatePlaybackProgress(userID string, update models.PlaybackProgressUpdate) (models.PlaybackProgress, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return models.PlaybackProgress{}, ErrUserIDRequired
+	}
+
+	if update.Duration <= 0 {
+		return models.PlaybackProgress{}, fmt.Errorf("duration must be positive")
+	}
+
+	if update.Position < 0 {
+		return models.PlaybackProgress{}, fmt.Errorf("position cannot be negative")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	perUser := s.ensurePlaybackProgressUserLocked(userID)
+	key := makeWatchKey(update.MediaType, update.ItemID)
+
+	// Calculate percent watched
+	percentWatched := (update.Position / update.Duration) * 100
+	if percentWatched > 100 {
+		percentWatched = 100
+	}
+
+	// Create or update progress
+	// Note: HiddenFromContinueWatching defaults to false, which clears any previous hidden state
+	progress := models.PlaybackProgress{
+		ID:             key,
+		MediaType:      strings.ToLower(update.MediaType),
+		ItemID:         update.ItemID,
+		Position:       update.Position,
+		Duration:       update.Duration,
+		PercentWatched: percentWatched,
+		UpdatedAt:      time.Now().UTC(),
+		ExternalIDs:    update.ExternalIDs,
+		SeasonNumber:   update.SeasonNumber,
+		EpisodeNumber:  update.EpisodeNumber,
+		SeriesID:       update.SeriesID,
+		SeriesName:     update.SeriesName,
+		EpisodeName:    update.EpisodeName,
+		MovieName:      update.MovieName,
+		Year:           update.Year,
+	}
+
+	perUser[key] = progress
+
+	// Clear hidden flag for related series entries when new progress is logged
+	// This ensures the series reappears in continue watching when user resumes watching
+	if update.SeriesID != "" {
+		for existingKey, existingProg := range perUser {
+			if existingProg.HiddenFromContinueWatching &&
+				(existingProg.ItemID == update.SeriesID || existingProg.SeriesID == update.SeriesID) {
+				existingProg.HiddenFromContinueWatching = false
+				perUser[existingKey] = existingProg
+			}
+		}
+	}
+
+	if err := s.savePlaybackProgressLocked(); err != nil {
+		return models.PlaybackProgress{}, err
+	}
+
+	// Invalidate continue watching cache for this user since progress changed
+	delete(s.continueWatchingCache, userID)
+
+	// Auto-mark as watched if >= 90% complete
+	if percentWatched >= 90 {
+		s.mu.Unlock() // Unlock before calling other methods
+		err := s.markAsWatchedFromProgress(userID, update)
+		s.mu.Lock() // Re-lock after
+		if err != nil {
+			// Log but don't fail the progress update
+			fmt.Printf("Warning: failed to auto-mark as watched: %v\n", err)
+		}
+	}
+
+	return progress, nil
+}
+
+// markAsWatchedFromProgress marks an item as watched based on progress threshold.
+func (s *Service) markAsWatchedFromProgress(userID string, update models.PlaybackProgressUpdate) error {
+	watched := true
+	historyUpdate := models.WatchHistoryUpdate{
+		MediaType:     update.MediaType,
+		ItemID:        update.ItemID,
+		Watched:       &watched,
+		ExternalIDs:   update.ExternalIDs,
+		SeasonNumber:  update.SeasonNumber,
+		EpisodeNumber: update.EpisodeNumber,
+		SeriesID:      update.SeriesID,
+		SeriesName:    update.SeriesName,
+	}
+
+	if update.MediaType == "episode" {
+		historyUpdate.Name = update.EpisodeName
+	} else {
+		historyUpdate.Name = update.MovieName
+		historyUpdate.Year = update.Year
+	}
+
+	_, err := s.UpdateWatchHistory(userID, historyUpdate)
+	return err
+}
+
+// GetPlaybackProgress retrieves the playback progress for a specific media item.
+func (s *Service) GetPlaybackProgress(userID, mediaType, itemID string) (*models.PlaybackProgress, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrUserIDRequired
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key := makeWatchKey(mediaType, itemID)
+	if perUser, ok := s.playbackProgress[userID]; ok {
+		if progress, ok := perUser[key]; ok {
+			return &progress, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// ListPlaybackProgress returns all playback progress items for a user.
+func (s *Service) ListPlaybackProgress(userID string) ([]models.PlaybackProgress, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrUserIDRequired
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	items := make([]models.PlaybackProgress, 0)
+	if perUser, ok := s.playbackProgress[userID]; ok {
+		items = make([]models.PlaybackProgress, 0, len(perUser))
+		for _, progress := range perUser {
+			// Deep copy to avoid concurrent map access during JSON encoding
+			copy := progress
+			if progress.ExternalIDs != nil {
+				copy.ExternalIDs = make(map[string]string, len(progress.ExternalIDs))
+				for k, v := range progress.ExternalIDs {
+					copy.ExternalIDs[k] = v
+				}
+			}
+			items = append(items, copy)
+		}
+	}
+
+	// Sort by most recently updated
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
+
+	return items, nil
+}
+
+// DeletePlaybackProgress removes playback progress for a specific media item.
+func (s *Service) DeletePlaybackProgress(userID, mediaType, itemID string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ErrUserIDRequired
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := makeWatchKey(mediaType, itemID)
+	if perUser, ok := s.playbackProgress[userID]; ok {
+		delete(perUser, key)
+		// Invalidate continue watching cache for this user since progress changed
+		delete(s.continueWatchingCache, userID)
+		return s.savePlaybackProgressLocked()
+	}
+
+	return nil
+}
+
+func (s *Service) ensurePlaybackProgressUserLocked(userID string) map[string]models.PlaybackProgress {
+	perUser, ok := s.playbackProgress[userID]
+	if !ok {
+		perUser = make(map[string]models.PlaybackProgress)
+		s.playbackProgress[userID] = perUser
+	}
+	return perUser
+}
+
+func (s *Service) loadPlaybackProgress() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	file, err := os.Open(s.playbackProgressPath)
+	if errors.Is(err, os.ErrNotExist) {
+		s.playbackProgress = make(map[string]map[string]models.PlaybackProgress)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open playback progress: %w", err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return fmt.Errorf("read playback progress: %w", err)
+	}
+	if len(data) == 0 {
+		s.playbackProgress = make(map[string]map[string]models.PlaybackProgress)
+		return nil
+	}
+
+	// Load as map[userID][]PlaybackProgress
+	var loaded map[string][]models.PlaybackProgress
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return fmt.Errorf("decode playback progress: %w", err)
+	}
+
+	s.playbackProgress = make(map[string]map[string]models.PlaybackProgress)
+	for userID, items := range loaded {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
+			continue
+		}
+		perUser := make(map[string]models.PlaybackProgress, len(items))
+		for _, item := range items {
+			key := makeWatchKey(item.MediaType, item.ItemID)
+			perUser[key] = item
+		}
+		s.playbackProgress[userID] = perUser
+	}
+
+	return nil
+}
+
+func (s *Service) savePlaybackProgressLocked() error {
+	// Convert to array format for storage
+	toSave := make(map[string][]models.PlaybackProgress)
+	for userID, perUser := range s.playbackProgress {
+		items := make([]models.PlaybackProgress, 0, len(perUser))
+		for _, item := range perUser {
+			items = append(items, item)
+		}
+		// Sort by most recently updated
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].UpdatedAt.After(items[j].UpdatedAt)
+		})
+		toSave[userID] = items
+	}
+
+	data, err := json.MarshalIndent(toSave, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode playback progress: %w", err)
+	}
+
+	if err := os.WriteFile(s.playbackProgressPath, data, 0o644); err != nil {
+		return fmt.Errorf("write playback progress: %w", err)
+	}
+
+	return nil
+}
+
+// clearPlaybackProgressEntryLocked removes a stored playback entry for the supplied item.
+// Callers must hold s.mu before invoking this helper.
+func (s *Service) clearPlaybackProgressEntryLocked(userID, mediaType, itemID string) bool {
+	userID = strings.TrimSpace(userID)
+	mediaType = strings.TrimSpace(mediaType)
+	itemID = strings.TrimSpace(itemID)
+	if userID == "" || mediaType == "" || itemID == "" {
+		return false
+	}
+
+	perUser, ok := s.playbackProgress[userID]
+	if !ok {
+		return false
+	}
+
+	key := makeWatchKey(mediaType, itemID)
+	if _, exists := perUser[key]; exists {
+		delete(perUser, key)
+		return true
+	}
+
+	// Fall back to case-insensitive match (handles S/E casing differences)
+	target := strings.ToLower(key)
+	for existingKey := range perUser {
+		if strings.ToLower(existingKey) == target {
+			delete(perUser, existingKey)
+			return true
+		}
+	}
+
+	return false
+}
+
+// HideFromContinueWatching marks an item as hidden from the continue watching list.
+// The item will reappear if new progress is logged.
+func (s *Service) HideFromContinueWatching(userID, seriesID string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ErrUserIDRequired
+	}
+	seriesID = strings.TrimSpace(seriesID)
+	if seriesID == "" {
+		return ErrSeriesIDRequired
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	perUser := s.ensurePlaybackProgressUserLocked(userID)
+
+	// Find any progress entries for this series (both movies and episodes)
+	found := false
+	for key, progress := range perUser {
+		// For movies, the itemID matches seriesID directly
+		// For episodes, the seriesID field matches
+		if progress.ItemID == seriesID || progress.SeriesID == seriesID {
+			progress.HiddenFromContinueWatching = true
+			perUser[key] = progress
+			found = true
+		}
+	}
+
+	// If no progress entry exists, create a minimal one just to track the hidden state
+	if !found {
+		// Determine if this is a movie or series based on the ID format
+		mediaType := "episode"
+		if strings.Contains(seriesID, ":movie:") {
+			mediaType = "movie"
+		}
+
+		key := makeWatchKey(mediaType, seriesID)
+		perUser[key] = models.PlaybackProgress{
+			ID:                         key,
+			MediaType:                  mediaType,
+			ItemID:                     seriesID,
+			SeriesID:                   seriesID,
+			UpdatedAt:                  time.Now().UTC(),
+			HiddenFromContinueWatching: true,
+		}
+	}
+
+	// Invalidate continue watching cache
+	delete(s.continueWatchingCache, userID)
+
+	return s.savePlaybackProgressLocked()
+}
+
+// clearEarlierEpisodesProgressLocked removes playback progress for all earlier episodes
+// of the same series when a later episode is marked as watched.
+// Callers must hold s.mu before invoking this helper.
+func (s *Service) clearEarlierEpisodesProgressLocked(userID, seriesID string, seasonNumber, episodeNumber int) bool {
+	if userID == "" || seriesID == "" {
+		return false
+	}
+
+	perUser, ok := s.playbackProgress[userID]
+	if !ok {
+		return false
+	}
+
+	anyCleared := false
+	for key, progress := range perUser {
+		// Only process episodes from the same series
+		if progress.MediaType != "episode" || progress.SeriesID != seriesID {
+			continue
+		}
+
+		// Check if this episode is earlier than the one being marked as watched
+		isEarlier := false
+		if progress.SeasonNumber < seasonNumber {
+			isEarlier = true
+		} else if progress.SeasonNumber == seasonNumber && progress.EpisodeNumber < episodeNumber {
+			isEarlier = true
+		}
+
+		if isEarlier {
+			delete(perUser, key)
+			anyCleared = true
+		}
+	}
+
+	return anyCleared
+}

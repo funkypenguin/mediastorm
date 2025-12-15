@@ -1,0 +1,160 @@
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+
+	"novastream/models"
+	"novastream/services/users"
+
+	"github.com/gorilla/mux"
+)
+
+type usersService interface {
+	List() []models.User
+	Create(name string) (models.User, error)
+	Rename(id, name string) (models.User, error)
+	SetColor(id, color string) (models.User, error)
+	Delete(id string) error
+	Exists(id string) bool
+}
+
+var _ usersService = (*users.Service)(nil)
+
+type UsersHandler struct {
+	Service usersService
+}
+
+func NewUsersHandler(service usersService) *UsersHandler {
+	return &UsersHandler{Service: service}
+}
+
+func (h *UsersHandler) List(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(h.Service.List())
+}
+
+func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.Service.Create(body.Name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, users.ErrNameRequired):
+			status = http.StatusBadRequest
+		case errors.Is(err, users.ErrStorageDirRequired):
+			status = http.StatusInternalServerError
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(user)
+}
+
+func (h *UsersHandler) Rename(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := strings.TrimSpace(vars["userID"])
+	if id == "" {
+		http.Error(w, "user id is required", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Name string `json:"name"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.Service.Rename(id, body.Name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, users.ErrNameRequired):
+			status = http.StatusBadRequest
+		case errors.Is(err, users.ErrUserNotFound):
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
+}
+
+func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := strings.TrimSpace(vars["userID"])
+	if id == "" {
+		http.Error(w, "user id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.Service.Delete(id); err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, users.ErrUserNotFound):
+			status = http.StatusNotFound
+		case strings.Contains(err.Error(), "cannot delete the last user"):
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *UsersHandler) SetColor(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := strings.TrimSpace(vars["userID"])
+	if id == "" {
+		http.Error(w, "user id is required", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Color string `json:"color"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	user, err := h.Service.SetColor(id, body.Color)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, users.ErrUserNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
+}
+
+func (h *UsersHandler) Options(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}

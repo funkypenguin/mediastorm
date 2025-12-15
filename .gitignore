@@ -1,0 +1,114 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+backend/bin/
+backend/novastream
+backend/novastream.exe
+client/NovaStream/android/app/build/
+client/NovaStream/ios/build/
+
+# IDE and editor files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# React Native
+client/NovaStream/.expo/
+client/NovaStream/.expo-shared/
+
+# Android
+client/NovaStream/android/.gradle/
+client/NovaStream/android/app/src/debug/
+client/NovaStream/android/app/src/release/
+
+# iOS
+client/NovaStream/ios/Pods/
+client/NovaStream/ios/build/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Go coverage files
+*.out
+coverage.txt
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Download cache and temporary files
+downloads/
+temp/
+cache/
+cache/streams/
+cache/transmux/
+
+.cursor
+.vscode
+nohup.out
+novastream
+frontend/stream
+altmount
+backend/config/settings.json
+
+frontend/build-1758861547810.apk
+frontend/app.json.bak
+frontend/build-1760379785308.apk
+
+.venv/lib
+*.pyc
+.venv
+backend/config
+TODO
+
+.pids
+-
+build*.apk
+tv-nav-example
+novastream-backend
+test_dear_x_search.go
+.gocache
+.github
+dev.sh
+frontend/.claude
+frontend/.github
+frontend/.husky
+.claude
+.cursor
+.github
+.gocache
+.logs
+.pids
+.venv
+.vscode
+backend/config
