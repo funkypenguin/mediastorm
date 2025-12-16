@@ -1,13 +1,17 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"novastream/config"
@@ -18,6 +22,60 @@ import (
 
 //go:embed admin_templates/*
 var adminTemplates embed.FS
+
+const (
+	adminSessionCookieName = "strmr_admin_session"
+	adminSessionDuration   = 24 * time.Hour
+)
+
+// adminSessionStore manages admin session tokens
+type adminSessionStore struct {
+	mu       sync.RWMutex
+	sessions map[string]time.Time // token -> expiry
+}
+
+var adminSessions = &adminSessionStore{
+	sessions: make(map[string]time.Time),
+}
+
+func (s *adminSessionStore) create() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Generate random token
+	b := make([]byte, 32)
+	rand.Read(b)
+	token := hex.EncodeToString(b)
+
+	s.sessions[token] = time.Now().Add(adminSessionDuration)
+
+	// Cleanup expired sessions
+	now := time.Now()
+	for t, exp := range s.sessions {
+		if exp.Before(now) {
+			delete(s.sessions, t)
+		}
+	}
+
+	return token
+}
+
+func (s *adminSessionStore) validate(token string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	exp, ok := s.sessions[token]
+	if !ok {
+		return false
+	}
+	return exp.After(time.Now())
+}
+
+func (s *adminSessionStore) revoke(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions, token)
+}
 
 // SettingsGroups defines the order and labels for settings groups
 var SettingsGroups = []map[string]string{
@@ -211,15 +269,17 @@ type AdminUIHandler struct {
 	indexTemplate       *template.Template
 	settingsTemplate    *template.Template
 	statusTemplate      *template.Template
+	loginTemplate       *template.Template
 	settingsPath        string
 	hlsManager          *HLSManager
 	usersService        *users.Service
 	userSettingsService *user_settings.Service
 	configManager       *config.Manager
+	pin                 string
 }
 
 // NewAdminUIHandler creates a new admin UI handler
-func NewAdminUIHandler(settingsPath string, hlsManager *HLSManager, usersService *users.Service, userSettingsService *user_settings.Service, configManager *config.Manager) *AdminUIHandler {
+func NewAdminUIHandler(settingsPath string, hlsManager *HLSManager, usersService *users.Service, userSettingsService *user_settings.Service, configManager *config.Manager, pin string) *AdminUIHandler {
 	funcMap := template.FuncMap{
 		"json": func(v interface{}) template.JS {
 			b, _ := json.Marshal(v)
@@ -314,15 +374,29 @@ func NewAdminUIHandler(settingsPath string, hlsManager *HLSManager, usersService
 		return tmpl
 	}
 
+	// Create login template (standalone, no base)
+	var loginTmpl *template.Template
+	loginContent, err := adminTemplates.ReadFile("admin_templates/login.html")
+	if err != nil {
+		fmt.Printf("Error reading login.html: %v\n", err)
+	} else {
+		loginTmpl, err = template.New("login").Parse(string(loginContent))
+		if err != nil {
+			fmt.Printf("Error parsing login.html: %v\n", err)
+		}
+	}
+
 	return &AdminUIHandler{
 		indexTemplate:       createPageTemplate("index.html"),
 		settingsTemplate:    createPageTemplate("settings.html"),
 		statusTemplate:      createPageTemplate("status.html"),
+		loginTemplate:       loginTmpl,
 		settingsPath:        settingsPath,
 		hlsManager:          hlsManager,
 		usersService:        usersService,
 		userSettingsService: userSettingsService,
 		configManager:       configManager,
+		pin:                 strings.TrimSpace(pin),
 	}
 }
 
@@ -621,4 +695,126 @@ func (h *AdminUIHandler) SaveUserSettings(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(settings)
+}
+
+// LoginPageData holds data for the login template
+type LoginPageData struct {
+	Error string
+}
+
+// IsAuthenticated checks if the request has a valid admin session
+func (h *AdminUIHandler) IsAuthenticated(r *http.Request) bool {
+	// If no PIN is configured, allow access
+	if h.pin == "" {
+		return true
+	}
+
+	cookie, err := r.Cookie(adminSessionCookieName)
+	if err != nil {
+		return false
+	}
+	return adminSessions.validate(cookie.Value)
+}
+
+// RequireAuth is middleware that redirects to login if not authenticated
+func (h *AdminUIHandler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !h.IsAuthenticated(r) {
+			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// LoginPage serves the login page (GET)
+func (h *AdminUIHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
+	// If no PIN configured, redirect to dashboard
+	if h.pin == "" {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+
+	// If already authenticated, redirect to dashboard
+	if h.IsAuthenticated(r) {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{}); err != nil {
+		fmt.Printf("Login template error: %v\n", err)
+		http.Error(w, "Template error", http.StatusInternalServerError)
+	}
+}
+
+// LoginSubmit handles login form submission (POST)
+func (h *AdminUIHandler) LoginSubmit(w http.ResponseWriter, r *http.Request) {
+	// If no PIN configured, redirect to dashboard
+	if h.pin == "" {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		h.renderLoginError(w, "Invalid request")
+		return
+	}
+
+	submittedPIN := strings.TrimSpace(r.FormValue("pin"))
+	if submittedPIN == "" {
+		h.renderLoginError(w, "PIN is required")
+		return
+	}
+
+	// Constant-time comparison to prevent timing attacks
+	if subtle.ConstantTimeCompare([]byte(submittedPIN), []byte(h.pin)) != 1 {
+		h.renderLoginError(w, "Invalid PIN")
+		return
+	}
+
+	// Create session and set cookie
+	token := adminSessions.create()
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookieName,
+		Value:    token,
+		Path:     "/admin",
+		MaxAge:   int(adminSessionDuration.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+// Logout handles logout requests
+func (h *AdminUIHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(adminSessionCookieName)
+	if err == nil {
+		adminSessions.revoke(cookie.Value)
+	}
+
+	// Clear the cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookieName,
+		Value:    "",
+		Path:     "/admin",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
+
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+}
+
+func (h *AdminUIHandler) renderLoginError(w http.ResponseWriter, errMsg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.loginTemplate.ExecuteTemplate(w, "login", LoginPageData{Error: errMsg}); err != nil {
+		fmt.Printf("Login template error: %v\n", err)
+		http.Error(w, "Template error", http.StatusInternalServerError)
+	}
+}
+
+// HasPIN returns true if a PIN is configured
+func (h *AdminUIHandler) HasPIN() bool {
+	return h.pin != ""
 }

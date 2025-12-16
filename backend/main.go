@@ -319,16 +319,23 @@ func main() {
 	)
 
 	// Register admin UI routes
-	adminUIHandler := handlers.NewAdminUIHandler(configPath, videoHandler.GetHLSManager(), userService, userSettingsService, cfgManager)
-	r.HandleFunc("/admin", adminUIHandler.Dashboard).Methods(http.MethodGet)
-	r.HandleFunc("/admin/", adminUIHandler.Dashboard).Methods(http.MethodGet)
-	r.HandleFunc("/admin/settings", adminUIHandler.SettingsPage).Methods(http.MethodGet)
-	r.HandleFunc("/admin/status", adminUIHandler.StatusPage).Methods(http.MethodGet)
-	r.HandleFunc("/admin/api/schema", adminUIHandler.GetSchema).Methods(http.MethodGet)
-	r.HandleFunc("/admin/api/status", adminUIHandler.GetStatus).Methods(http.MethodGet)
-	r.HandleFunc("/admin/api/streams", adminUIHandler.GetStreams).Methods(http.MethodGet)
-	r.HandleFunc("/admin/api/user-settings", adminUIHandler.GetUserSettings).Methods(http.MethodGet)
-	r.HandleFunc("/admin/api/user-settings", adminUIHandler.SaveUserSettings).Methods(http.MethodPut)
+	adminUIHandler := handlers.NewAdminUIHandler(configPath, videoHandler.GetHLSManager(), userService, userSettingsService, cfgManager, settings.Server.PIN)
+
+	// Login/logout routes (no auth required)
+	r.HandleFunc("/admin/login", adminUIHandler.LoginPage).Methods(http.MethodGet)
+	r.HandleFunc("/admin/login", adminUIHandler.LoginSubmit).Methods(http.MethodPost)
+	r.HandleFunc("/admin/logout", adminUIHandler.Logout).Methods(http.MethodGet, http.MethodPost)
+
+	// Protected admin routes (require PIN authentication)
+	r.HandleFunc("/admin", adminUIHandler.RequireAuth(adminUIHandler.Dashboard)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/", adminUIHandler.RequireAuth(adminUIHandler.Dashboard)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/settings", adminUIHandler.RequireAuth(adminUIHandler.SettingsPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/status", adminUIHandler.RequireAuth(adminUIHandler.StatusPage)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/schema", adminUIHandler.RequireAuth(adminUIHandler.GetSchema)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/status", adminUIHandler.RequireAuth(adminUIHandler.GetStatus)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/streams", adminUIHandler.RequireAuth(adminUIHandler.GetStreams)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.GetUserSettings)).Methods(http.MethodGet)
+	r.HandleFunc("/admin/api/user-settings", adminUIHandler.RequireAuth(adminUIHandler.SaveUserSettings)).Methods(http.MethodPut)
 	fmt.Println("📊 Admin dashboard available at /admin")
 
 	// Mount WebDAV handler if enabled
