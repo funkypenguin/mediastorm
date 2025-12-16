@@ -26,10 +26,14 @@ RUN CGO_ENABLED=1 go build -o strmr .
 # Final stage
 FROM debian:bookworm-slim
 
-# Install ca-certificates and download tools
+# Install ca-certificates, download tools, and Python for title parsing
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates wget xz-utils \
+    ca-certificates wget xz-utils python3 python3-venv python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Create Python virtual environment and install PTT (parsett)
+RUN python3 -m venv /.venv && \
+    /.venv/bin/pip install --no-cache-dir parsett
 
 # Download static ffmpeg build with Dolby Vision (libdovi) support
 RUN wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
@@ -43,6 +47,9 @@ WORKDIR /root/
 
 # Copy the binary from builder stage
 COPY --from=builder /app/strmr .
+
+# Copy Python title parsing scripts to root (expected by parsett package)
+COPY parse_title.py parse_title_batch.py /
 
 # Expose port
 EXPOSE 7777
