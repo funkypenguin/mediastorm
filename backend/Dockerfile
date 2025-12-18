@@ -14,6 +14,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy go mod files
 COPY backend/go.mod backend/go.sum ./
 
+# Allow Go to download newer toolchains if dependencies require it
+ENV GOTOOLCHAIN=auto
+
 # Download dependencies
 RUN go mod download
 
