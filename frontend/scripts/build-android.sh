@@ -39,7 +39,7 @@ upload_to_release() {
   local apk_path="$2"
   local asset_name="$3"
 
-  # Create release if it doesn't exist
+  # Create release if it doesn't exist (ignore error if it already exists)
   if ! gh release view "$tag" &>/dev/null; then
     echo "  Creating release $tag..."
     gh release create "$tag" \
@@ -51,20 +51,14 @@ upload_to_release() {
 - **mediastorm-mobile-${version}.apk** - Android Mobile version
 - **mediastorm-tv-${version}.apk** - Android TV version
 EOF
-)"
+)" 2>/dev/null || echo "  Release $tag already exists, uploading to it..."
   fi
 
-  # Delete existing asset if present
-  if gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx "$asset_name"; then
-    echo "  Replacing existing asset $asset_name..."
-    gh release delete-asset "$tag" "$asset_name" --yes
-  fi
-
-  echo "  Uploading $asset_name..."
+  echo "  Uploading $asset_name (replacing if exists)..."
   local tmp_dir
   tmp_dir=$(mktemp -d)
   cp "$apk_path" "$tmp_dir/$asset_name"
-  gh release upload "$tag" "$tmp_dir/$asset_name"
+  gh release upload "$tag" "$tmp_dir/$asset_name" --clobber
   rm -rf "$tmp_dir"
 }
 
