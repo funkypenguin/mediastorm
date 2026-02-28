@@ -215,6 +215,7 @@ export const buildStreamUrl = (
     hasHDR10?: boolean;
     needsAudioTranscode?: boolean; // TrueHD, DTS, etc.
     startOffset?: number;
+    startPercent?: number;
     audioTrack?: number;
     subtitleTrack?: number;
     profileId?: string;
@@ -540,6 +541,7 @@ export const launchNativePlayer = async (
     hdr10?: boolean;
     forceAAC?: boolean;
     startOffset?: number;
+    startPercent?: number; // Resume by percentage (Trakt imports without real duration)
     titleId?: string;
     imdbId?: string;
     tvdbId?: string;
@@ -583,6 +585,7 @@ export const launchNativePlayer = async (
     hdr10,
     forceAAC,
     startOffset,
+    startPercent,
     titleId,
     imdbId,
     tvdbId,
@@ -646,6 +649,7 @@ export const launchNativePlayer = async (
       ...(hdr10 ? { hdr10: '1' } : {}),
       ...(forceAAC ? { forceAAC: '1' } : {}),
       ...(typeof startOffset === 'number' ? { startOffset: startOffset.toString() } : {}),
+      ...(typeof startPercent === 'number' ? { startPercent: startPercent.toString() } : {}),
       ...(titleId ? { titleId } : {}),
       ...(imdbId ? { imdbId } : {}),
       ...(tvdbId ? { tvdbId } : {}),
@@ -688,6 +692,7 @@ export const initiatePlayback = async (
     tvdbId?: string;
     seriesIdentifier?: string;
     startOffset?: number;
+    startPercent?: number; // Resume by percentage (Trakt imports without real duration)
     debugPlayer?: boolean;
     onExternalPlayerLaunch?: () => void; // Callback to hide loading screen when launching external player
     userSettings?: any; // Per-user settings override
@@ -1026,6 +1031,7 @@ export const initiatePlayback = async (
     hasHDR10,
     needsAudioTranscode,
     startOffset: options.startOffset,
+    startPercent: options.startPercent,
     audioTrack: selectedAudioTrack,
     subtitleTrack: selectedSubtitleTrack,
     profileId: options.profileId,

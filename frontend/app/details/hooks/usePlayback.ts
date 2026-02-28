@@ -351,6 +351,7 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
   // -------------------------------------------------------------------------
   const abortControllerRef = useRef<AbortController | null>(null);
   const pendingStartOffsetRef = useRef<number | null>(null);
+  const pendingStartPercentRef = useRef<number | null>(null);
   const pendingShuffleModeRef = useRef<boolean>(false);
   const resolveAndPlayRef = useRef<((...args: any[]) => Promise<void>) | null>(null);
   const initiatePlaybackRef = useRef<
@@ -1043,12 +1044,20 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
           tvdbId,
           seriesIdentifier,
           ...(() => {
+            const pct = pendingStartPercentRef.current;
             const offset = pendingStartOffsetRef.current;
+            if (pct !== null && pct > 0) {
+              pendingStartPercentRef.current = null;
+              return { startPercent: pct };
+            }
             if (offset !== null) {
               pendingStartOffsetRef.current = null;
               return { startOffset: offset };
             }
             if (currentProgress) {
+              if (currentProgress.duration === 0 && currentProgress.percentWatched > 0) {
+                return { startPercent: currentProgress.percentWatched };
+              }
               return { startOffset: currentProgress.position };
             }
             return {};
@@ -1216,7 +1225,9 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
         throw new Error('Prequeue is missing stream path');
       }
 
-      // Get start offset from pending ref (for resume playback) -- get it early as we may use it for HLS session
+      // Get start offset/percent from pending refs (for resume playback) -- get them early as we may use them for HLS session
+      const startPercent = pendingStartPercentRef.current;
+      pendingStartPercentRef.current = null;
       const startOffset = pendingStartOffsetRef.current;
       pendingStartOffsetRef.current = null;
 
@@ -1227,6 +1238,7 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
         hasDolbyVision: prequeueStatus.hasDolbyVision,
         hasHdr10: prequeueStatus.hasHdr10,
         startOffset: startOffset ?? 'null',
+        startPercent: startPercent ?? 'null',
         playbackPreference,
       });
 
@@ -1589,23 +1601,7 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
         }
         console.log('[prequeue] Using direct stream URL:', streamUrl);
 
-        // SDR path: Start subtitle extraction with correct offset (lazy extraction)
-        if (prequeueStatus.prequeueId) {
-          try {
-            const subtitleResult = await apiService.startPrequeueSubtitles(prequeueStatus.prequeueId, startOffset ?? 0);
-            if (subtitleResult.subtitleSessions && Object.keys(subtitleResult.subtitleSessions).length > 0) {
-              prequeueStatus.subtitleSessions = subtitleResult.subtitleSessions;
-              console.log(
-                '[prequeue] Started subtitle extraction for',
-                Object.keys(subtitleResult.subtitleSessions).length,
-                'tracks at offset',
-                startOffset ?? 0,
-              );
-            }
-          } catch (subtitleError) {
-            console.warn('[prequeue] Failed to start subtitle extraction:', subtitleError);
-          }
-        }
+        // Subtitle extraction disabled — the player handles subtitles natively.
       }
 
       // Build display title
@@ -1661,6 +1657,7 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
           ...(prequeueStatus.dolbyVisionProfile ? { dvProfile: prequeueStatus.dolbyVisionProfile } : {}),
           ...(prequeueStatus.needsAudioTranscode ? { forceAAC: '1' } : {}),
           ...(typeof startOffset === 'number' ? { startOffset: String(startOffset) } : {}),
+          ...(typeof startPercent === 'number' && startPercent > 0 ? { startPercent: String(startPercent) } : {}),
           ...(typeof hlsActualStartOffset === 'number' ? { actualStartOffset: String(hlsActualStartOffset) } : {}),
           ...(typeof hlsDuration === 'number' ? { durationHint: String(hlsDuration) } : {}),
           ...(titleId ? { titleId } : {}),
@@ -2386,8 +2383,15 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
     // Apply rewind-on-playback-start setting
     const rewindAmount =
       userSettings?.playback?.rewindOnPlaybackStart ?? settings?.playback?.rewindOnPlaybackStart ?? 0;
-    const resumePosition = Math.max(0, currentProgress.position - rewindAmount);
-    await pendingPlaybackAction(resumePosition);
+    if (currentProgress.duration === 0 && currentProgress.percentWatched > 0) {
+      // Trakt import with only percentage — no real duration/position.
+      // Store percent in pendingStartPercentRef so playback.ts sends startPercent.
+      pendingStartPercentRef.current = currentProgress.percentWatched;
+      await pendingPlaybackAction();
+    } else {
+      const resumePosition = Math.max(0, currentProgress.position - rewindAmount);
+      await pendingPlaybackAction(resumePosition);
+    }
 
     setPendingPlaybackAction(null);
     setCurrentProgress(null);
@@ -2446,7 +2450,9 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
           tvdbId,
           seriesIdentifier,
           userId: activeUserId || undefined,
-          ...(pendingStartOffsetRef.current != null ? { startOffset: pendingStartOffsetRef.current } : {}),
+          ...(pendingStartPercentRef.current != null
+            ? { startPercent: pendingStartPercentRef.current }
+            : pendingStartOffsetRef.current != null ? { startOffset: pendingStartOffsetRef.current } : {}),
           useNativePlayer: true,
         });
       };

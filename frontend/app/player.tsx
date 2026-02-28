@@ -132,6 +132,7 @@ export default function PlayerScreen() {
     hdr10: hdr10FlagParam,
     forceAAC: forceAACParam,
     startOffset: startOffsetParam,
+    startPercent: startPercentParam,
     actualStartOffset: actualStartOffsetParam,
     titleId: titleIdParam,
     imdbId: imdbIdParam,
@@ -247,6 +248,14 @@ export default function PlayerScreen() {
     const parsed = Number(raw);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
   }, [startOffsetParam]);
+  const initialStartPercent = useMemo(() => {
+    const raw = Array.isArray(startPercentParam) ? startPercentParam[0] : startPercentParam;
+    if (!raw) {
+      return 0;
+    }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 && parsed < 100 ? parsed : 0;
+  }, [startPercentParam]);
   // Keyframe-aligned start offset for subtitle sync (passed from prequeue HLS session creation)
   const initialActualStartOffset = useMemo(() => {
     const raw = Array.isArray(actualStartOffsetParam) ? actualStartOffsetParam[0] : actualStartOffsetParam;
@@ -1213,6 +1222,7 @@ export default function PlayerScreen() {
   });
   const hasAttemptedInitialWarmStartRef = useRef(false);
   const hasReceivedPlayerLoadRef = useRef(false);
+  const pendingStartPercentRef = useRef(0); // Percent-based resume (Trakt imports without real duration)
   const hlsSessionRetryCountRef = useRef(0);
   // Note: isRecreatingHlsSessionRef and skipTrackPreferencesRef are now provided by useHlsSession hook
   const isRetryingHlsSessionRef = useRef(false);
@@ -1995,6 +2005,11 @@ export default function PlayerScreen() {
       }
       pendingSeekAttemptRef.current.attempts = 0;
       pendingSeekAttemptRef.current.lastAttemptMs = 0;
+    } else if (initialStartPercent > 0) {
+      // Percent-based resume from Trakt import — will resolve to seconds once duration is known
+      pendingStartPercentRef.current = initialStartPercent;
+      pendingSessionSeekRef.current = null;
+      console.log('🎬 [player] Percent-based resume pending:', initialStartPercent, '%');
     } else {
       pendingSessionSeekRef.current = null;
     }
@@ -3207,6 +3222,15 @@ export default function PlayerScreen() {
         hasReceivedPlayerLoadRef.current = true;
       }
       updateDuration(value, 'player.load');
+
+      // Resolve percent-based resume now that we know the real duration
+      if (pendingStartPercentRef.current > 0 && value > 0) {
+        const seekTo = (pendingStartPercentRef.current / 100) * value;
+        console.log(`🎬 [player] Resolving startPercent=${pendingStartPercentRef.current}% to ${seekTo}s (duration=${value}s)`);
+        pendingStartPercentRef.current = 0;
+        pendingSessionSeekRef.current = seekTo;
+      }
+
       if (pendingSessionSeekRef.current !== null) {
         applyPendingSessionSeek('player-load');
       }
@@ -4799,337 +4823,13 @@ export default function PlayerScreen() {
     selectedSubtitleTrackIndex,
   ]);
 
-  // Probe subtitle tracks from backend for non-HLS streams
-  // This gives us accurate track indices and metadata for subtitle selection
-  // If pre-extracted subtitles are available, use them instead of probing
+  // Backend subtitle probe/extraction disabled — the player handles subtitles natively.
+  // Set backendSubtitleTracks to empty array so downstream effects don't block waiting for probe.
   useEffect(() => {
-    // Skip for HLS streams - they use sidecar subtitles from the HLS session
-    // Also skip for non-native player with HDR (those will become HLS streams)
-    // But DO probe for native player (even with HDR, since it uses direct streaming)
-    if (isHlsStream || (!useNativePlayer && routeHasAnyHDR)) {
-      setBackendSubtitleTracks(null);
-      return;
-    }
+    setBackendSubtitleTracks([]);
+  }, []);
 
-    // Skip during HLS seek transitions - isHlsStream temporarily becomes false when URL is cleared
-    // but we're still in an HLS playback context and shouldn't reset subtitle tracks
-    if (isRecreatingHlsSessionRef.current || pausedForSeekRef.current) {
-      console.log('[player] skipping subtitle probe during HLS seek transition');
-      return;
-    }
-
-    // If we have pre-extracted subtitles, use them instead of probing
-    if (preExtractedSubtitles && preExtractedSubtitles.length > 0) {
-      console.log('[player] using pre-extracted subtitle tracks:', preExtractedSubtitles.length);
-      const tracks = preExtractedSubtitles.map((session) => ({
-        index: session.trackIndex,
-        language: session.language,
-        title: session.title,
-        codec: session.codec,
-        forced: session.isForced,
-      }));
-      setBackendSubtitleTracks(tracks);
-
-      // Build track options from pre-extracted sessions
-      const subtitleOptions: TrackOption[] = preExtractedSubtitles.map((session) => {
-        let label = session.title || session.language || `Track ${session.trackIndex + 1}`;
-        if (
-          session.language &&
-          session.title &&
-          !session.title.toLowerCase().includes(session.language.toLowerCase())
-        ) {
-          label = `${session.language.toUpperCase()} - ${session.title}`;
-        }
-        if (session.isForced) {
-          label += ' (Forced)';
-        }
-        return {
-          id: String(session.trackIndex),
-          label,
-        };
-      });
-
-      setSubtitleTrackOptions([SUBTITLE_OFF_OPTION, ...subtitleOptions]);
-
-      // Auto-select based on user preference (same logic as probe path)
-      const preferredLang = (
-        userSettings?.playback?.preferredSubtitleLanguage ||
-        settings?.playback?.preferredSubtitleLanguage ||
-        ''
-      ).toLowerCase();
-      const preferredMode = userSettings?.playback?.preferredSubtitleMode || settings?.playback?.preferredSubtitleMode;
-
-      // Convert to SubtitleStreamMetadata-like format for selection logic
-      const streamsForSelection: SubtitleStreamMetadata[] = preExtractedSubtitles.map((s) => ({
-        index: s.trackIndex,
-        language: s.language,
-        title: s.title,
-        isForced: s.isForced,
-        codec: s.codec || '',
-      }));
-
-      const validMode =
-        preferredMode === 'on' || preferredMode === 'off' || preferredMode === 'forced-only' ? preferredMode : 'on';
-
-      const selectedIndex = findSubtitleTrackByPreference(streamsForSelection, preferredLang || undefined, validMode);
-
-      // Check if external subtitles are already active
-      if (externalSubtitleUrlRef.current) {
-        console.log('[player] preserving external subtitle selection');
-        return;
-      }
-
-      if (selectedIndex !== null) {
-        setSelectedSubtitleTrackId(String(selectedIndex));
-      } else if (validMode === 'off') {
-        setSelectedSubtitleTrackId('off');
-      } else if (useNativePlayer) {
-        // Native player: don't auto-search yet — pre-extracted tracks are text-only but the
-        // native player may have PGS/bitmap tracks that match. Defer to handleTracksAvailable
-        // which fires once KSPlayer/MPV reports all tracks (including PGS).
-        console.log('[player] native player: preferred language not in pre-extracted (text-only) tracks, deferring to native track detection');
-        setSelectedSubtitleTrackId('off');
-      } else {
-        // Preferred language not found - trigger auto-search
-        setSelectedSubtitleTrackId('off');
-        triggerAutoSubtitleSearchIfNeeded();
-      }
-      return;
-    }
-
-    // Need source path to probe
-    if (!sourcePath) {
-      return;
-    }
-
-    console.log('[player] probing subtitle tracks from backend', { sourcePath });
-
-    let cancelled = false;
-    apiService
-      .probeSubtitleTracks(sourcePath)
-      .then((response) => {
-        if (cancelled) return;
-        console.log('[player] backend subtitle tracks:', response.tracks);
-        setBackendSubtitleTracks(response.tracks);
-
-        // Build track options from backend response
-        if (response.tracks.length > 0) {
-          const backendSubtitleOptions: TrackOption[] = response.tracks.map((track) => {
-            // Build a descriptive label
-            let label = track.title || track.language || `Track ${track.index + 1}`;
-            if (track.language && track.title && !track.title.toLowerCase().includes(track.language.toLowerCase())) {
-              label = `${track.language.toUpperCase()} - ${track.title}`;
-            }
-            if (track.forced) {
-              label += ' (Forced)';
-            }
-            return {
-              id: String(track.index),
-              label,
-            };
-          });
-
-          // Merge with existing options (keep Off option, add backend tracks)
-          const newTrackOptions = [SUBTITLE_OFF_OPTION, ...backendSubtitleOptions];
-          setSubtitleTrackOptions(newTrackOptions);
-          // Get valid track ids from backend response
-          const validTrackIds = new Set(['off', ...response.tracks.map((t) => String(t.index))]);
-
-          // Auto-select based on user preference
-          const preferredLang = (
-            userSettings?.playback?.preferredSubtitleLanguage ||
-            settings?.playback?.preferredSubtitleLanguage ||
-            ''
-          ).toLowerCase();
-          const preferredMode =
-            userSettings?.playback?.preferredSubtitleMode || settings?.playback?.preferredSubtitleMode;
-
-          // Convert backend tracks to SubtitleStreamMetadata-like format for reuse of selection logic
-          const streamsForSelection: SubtitleStreamMetadata[] = response.tracks.map((t) => ({
-            index: t.index,
-            language: t.language,
-            title: t.title,
-            isForced: t.forced,
-            codec: t.codec || '',
-          }));
-
-          // Use the same selection logic as metadata path
-          const validMode =
-            preferredMode === 'on' || preferredMode === 'off' || preferredMode === 'forced-only' ? preferredMode : 'on'; // Default to 'on' if not set
-
-          const selectedIndex = findSubtitleTrackByPreference(
-            streamsForSelection,
-            preferredLang || undefined,
-            validMode,
-          );
-
-          // Check if external subtitles are already active
-          if (externalSubtitleUrlRef.current) {
-            console.log('[player] preserving external subtitle selection');
-            return;
-          }
-
-          if (selectedIndex !== null) {
-            setSelectedSubtitleTrackId(String(selectedIndex));
-          } else if (validMode === 'off') {
-            setSelectedSubtitleTrackId('off');
-          } else if (useNativePlayer) {
-            // Native player: don't auto-search yet — backend probe returns text-only tracks but
-            // native player may have PGS/bitmap tracks. Defer to handleTracksAvailable.
-            console.log('[player] native player: preferred language not in probed (text-only) tracks, deferring to native track detection');
-            setSelectedSubtitleTrackId('off');
-          } else {
-            // Preferred language not found - trigger auto-search
-            setSelectedSubtitleTrackId('off');
-            triggerAutoSubtitleSearchIfNeeded();
-          }
-        } else {
-          // No text-based subtitle tracks found (e.g., only PGS bitmap subs)
-          // Check if external subtitles are already active
-          if (externalSubtitleUrlRef.current) {
-            console.log('[player] preserving external subtitle selection');
-            return;
-          }
-          if (useNativePlayer) {
-            // Native player (KSPlayer) can handle PGS/bitmap subtitles natively.
-            // Don't clear player-reported tracks — handleTracksAvailable will populate
-            // from KSPlayer's own track detection.
-            console.log('[player] no text-based tracks from backend, deferring to native player for bitmap subtitle support');
-            return;
-          }
-          // Non-native player: clear tracks (can't render PGS)
-          console.log('[player] no text-based subtitle tracks found, clearing player-reported tracks');
-          setSubtitleTrackOptions([SUBTITLE_OFF_OPTION]);
-          setSelectedSubtitleTrackId('off');
-          triggerAutoSubtitleSearchIfNeeded();
-        }
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.error('[player] failed to probe subtitle tracks:', error);
-        setBackendSubtitleTracks(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isHlsStream, useNativePlayer, routeHasAnyHDR, sourcePath, userSettings, settings, preExtractedSubtitles]);
-
-  // Start subtitle extraction for non-HLS streams when a subtitle track is selected
-  // This uses the standalone subtitle extraction endpoint to generate VTT
-  // If pre-extracted subtitles are available, use them instead of on-demand extraction
-  useEffect(() => {
-    // Skip for NativePlayer - KSPlayer/MPV handle subtitles internally with custom styling
-    if (useNativePlayer) {
-      return;
-    }
-
-    // Only for non-HLS streams with an embedded subtitle track selected
-    // Skip for HLS streams (they use sidecar subtitles from the HLS session)
-    // Also skip for DV/HDR content which will become HLS streams
-    if (isHlsStream || routeHasAnyHDR) {
-      // HLS/DV/HDR streams use sidecar subtitles from the HLS session
-      return;
-    }
-
-    // Wait for backend probe to complete before starting extraction
-    // This prevents race condition where the player reports incorrect track indices
-    if (backendSubtitleTracks === null) {
-      console.log('[player] subtitle extraction waiting for backend probe');
-      return;
-    }
-
-    // If no subtitle track selected or external subtitles are in use, clear extracted URL
-    if (
-      selectedSubtitleTrackIndex === null ||
-      selectedSubtitleTrackIndex < 0 ||
-      selectedSubtitleTrackId === 'external'
-    ) {
-      setExtractedSubtitleUrl(null);
-      setExtractedSubtitleSessionId(null);
-      return;
-    }
-
-    // Validate track index is within range of backend-probed tracks
-    // This prevents race condition where the player reports absolute stream indices (e.g., 14)
-    // before the backend probe completes and sets correct relative indices (0-4)
-    if (selectedSubtitleTrackIndex >= backendSubtitleTracks.length) {
-      console.log('[player] subtitle extraction skipped - track index out of range', {
-        selectedSubtitleTrackIndex,
-        backendTracksCount: backendSubtitleTracks.length,
-      });
-      return;
-    }
-
-    // Check if we have a pre-extracted session for this track
-    if (preExtractedSubtitles) {
-      const preExtractedSession = preExtractedSubtitles.find(
-        (session) => session.trackIndex === selectedSubtitleTrackIndex,
-      );
-      if (preExtractedSession) {
-        console.log('[player] using pre-extracted subtitle for track', selectedSubtitleTrackIndex, {
-          sessionId: preExtractedSession.sessionId,
-          isExtracting: preExtractedSession.isExtracting,
-          firstCueTime: preExtractedSession.firstCueTime,
-        });
-        // Build full URL from relative path
-        const fullUrl = apiService.getFullUrl(preExtractedSession.vttUrl);
-        setExtractedSubtitleUrl(fullUrl);
-        setExtractedSubtitleSessionId(preExtractedSession.sessionId);
-        // Set first cue time for subtitle sync (mirrors actualPlaybackOffsetRef for HLS)
-        sdrFirstCueTimeRef.current = preExtractedSession.firstCueTime ?? 0;
-        return;
-      }
-    }
-
-    // Need source path to start extraction (fallback to on-demand)
-    if (!sourcePath) {
-      console.log('[player] subtitle extraction skipped - no sourcePath');
-      return;
-    }
-
-    // Start subtitle extraction (on-demand fallback)
-    console.log('[player] starting on-demand subtitle extraction', {
-      sourcePath,
-      subtitleTrack: selectedSubtitleTrackIndex,
-      backendTracks: backendSubtitleTracks?.length,
-      startOffset: initialStartOffset,
-    });
-
-    let cancelled = false;
-    apiService
-      .startSubtitleExtract(sourcePath, selectedSubtitleTrackIndex, initialStartOffset)
-      .then((response) => {
-        if (cancelled) return;
-        console.log('[player] subtitle extraction started', response);
-        // Build full URL from relative path
-        const fullUrl = apiService.getFullUrl(response.subtitleUrl);
-        setExtractedSubtitleUrl(fullUrl);
-        setExtractedSubtitleSessionId(response.sessionId);
-        // Set first cue time for subtitle sync (mirrors actualPlaybackOffsetRef for HLS)
-        sdrFirstCueTimeRef.current = response.firstCueTime ?? 0;
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.error('[player] subtitle extraction failed', error);
-        setExtractedSubtitleUrl(null);
-        setExtractedSubtitleSessionId(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    useNativePlayer,
-    isHlsStream,
-    routeHasAnyHDR,
-    selectedSubtitleTrackIndex,
-    selectedSubtitleTrackId,
-    sourcePath,
-    backendSubtitleTracks,
-    preExtractedSubtitles,
-    initialStartOffset,
-  ]);
+  // Backend subtitle extraction disabled — the player handles subtitles natively.
 
   // Callback to handle subtitle cues range changes from SubtitleOverlay
   const handleSubtitleCuesRangeChange = useCallback((range: SubtitleCuesRange | null) => {
@@ -5141,62 +4841,8 @@ export default function PlayerScreen() {
     setSubtitleDebugInfo(info);
   }, []);
 
-  // Re-extract subtitles when seeking outside the available cue range
-  const triggerSubtitleReExtraction = useCallback(
-    (seekPosition: number) => {
-      // Only for non-HLS streams with active subtitle extraction
-      if (isHlsStream || !sourcePath || selectedSubtitleTrackIndex === null || selectedSubtitleTrackIndex < 0) {
-        return;
-      }
-
-      const range = subtitleCuesRangeRef.current;
-      // If no range yet (extraction just started) or position is within range, no need to re-extract
-      if (!range) {
-        console.log('[player] subtitle re-extraction skipped - no cue range yet');
-        return;
-      }
-
-      // Check if seek position is outside available cue range
-      // Add a small buffer (10s) to avoid unnecessary re-extractions for small seeks
-      const buffer = 10;
-      const isOutsideRange = seekPosition < range.minTime - buffer || seekPosition > range.maxTime + buffer;
-
-      if (!isOutsideRange) {
-        console.log('[player] seek within subtitle cue range, no re-extraction needed', {
-          seekPosition,
-          range,
-        });
-        return;
-      }
-
-      console.log('[player] seek outside subtitle cue range, triggering re-extraction', {
-        seekPosition,
-        range,
-        selectedSubtitleTrackIndex,
-      });
-
-      // Clear current extraction state
-      setExtractedSubtitleUrl(null);
-      setExtractedSubtitleSessionId(null);
-      subtitleCuesRangeRef.current = null;
-
-      // Start new extraction from seek position
-      apiService
-        .startSubtitleExtract(sourcePath, selectedSubtitleTrackIndex, seekPosition)
-        .then((response) => {
-          console.log('[player] subtitle re-extraction started', response);
-          const fullUrl = apiService.getFullUrl(response.subtitleUrl);
-          setExtractedSubtitleUrl(fullUrl);
-          setExtractedSubtitleSessionId(response.sessionId);
-          // Update first cue time for subtitle sync after seek
-          sdrFirstCueTimeRef.current = response.firstCueTime ?? 0;
-        })
-        .catch((error) => {
-          console.error('[player] subtitle re-extraction failed', error);
-        });
-    },
-    [isHlsStream, sourcePath, selectedSubtitleTrackIndex],
-  );
+  // Re-extraction disabled — the player handles subtitles natively.
+  const triggerSubtitleReExtraction = useCallback((_seekPosition: number) => {}, []);
 
   // Keep ref updated for use in seek handler
   const triggerSubtitleReExtractionRef = useRef(triggerSubtitleReExtraction);
