@@ -193,9 +193,13 @@ export function useDetailsData(params: UseDetailsDataParams): DetailsDataResult 
         if (cancelled) return;
         const fetchMs = Date.now() - bundleFetchStart;
 
-        // Log bundle content breakdown
+        // Log bundle content breakdown including enrichment fields
         const hasMovie = data.movieDetails != null;
         const hasSeries = data.seriesDetails != null;
+        const titleData = hasMovie ? data.movieDetails : data.seriesDetails?.title;
+        const hasCast = (titleData?.credits?.cast?.length ?? 0) > 0;
+        const hasRatings = (titleData?.ratings?.length ?? 0) > 0;
+        const hasReleases = !!(titleData?.theatricalRelease || titleData?.homeRelease);
         const similarCount = data.similar?.length ?? 0;
         const trailerCount = data.trailers?.trailers?.length ?? 0;
         const progressCount = data.playbackProgress?.length ?? 0;
@@ -205,6 +209,9 @@ export function useDetailsData(params: UseDetailsDataParams): DetailsDataResult 
           `[details-bundle] Received in ${fetchMs}ms — ` +
           `type: ${bundleType}, ` +
           `${hasMovie ? 'movie' : hasSeries ? 'series' : 'no'} details, ` +
+          `cast: ${hasCast ? (titleData?.credits?.cast?.length ?? 0) : 'none'}, ` +
+          `ratings: ${hasRatings ? (titleData?.ratings?.length ?? 0) : 'none'}, ` +
+          `releases: ${hasReleases ? 'yes' : 'none'}, ` +
           `similar: ${similarCount}, trailers: ${trailerCount}, ` +
           `progress: ${progressCount} items, prefs: ${hasPrefs}, watchState: ${hasWatchState}`
         );
@@ -247,19 +254,36 @@ export function useDetailsData(params: UseDetailsDataParams): DetailsDataResult 
   }, [activeUserId, titleId, title, isSeries, yearNumber, tvdbIdNumber, tmdbIdNumber, imdbId]);
 
   // === Consolidated bundle hydration ===
+  // Only mark movie/series as fully hydrated if the bundle returned enrichment
+  // data (credits, ratings, releases). If enrichment is missing — e.g. because
+  // the backend's TMDB fetch timed out — leave the flag false so the individual
+  // fallback fetch can retry and potentially fill in the gaps.
   useEffect(() => {
     if (!detailsBundle) return;
     const hydrateStart = Platform.isTV ? performance.now() : 0;
 
     if (detailsBundle.movieDetails && !hydratedFromBundle.current.movieDetails) {
-      hydratedFromBundle.current.movieDetails = true;
-      setMovieDetails(detailsBundle.movieDetails);
+      const md = detailsBundle.movieDetails;
+      const hasEnrichment = !!(md.credits?.cast?.length || md.ratings?.length || md.theatricalRelease || md.homeRelease);
+      // Only mark as fully hydrated if enrichment data is present.
+      // When missing, accept the bundle data (overview, poster, etc.) but leave the
+      // flag false so the individual fallback can retry TMDB enrichment.
+      hydratedFromBundle.current.movieDetails = hasEnrichment;
+      setMovieDetails(md);
       setMovieDetailsLoading(false);
+      if (!hasEnrichment) {
+        console.log('[details-bundle] movie details missing enrichment (credits/ratings/releases), will retry individually');
+      }
     }
     if (detailsBundle.seriesDetails && !hydratedFromBundle.current.seriesDetails) {
-      hydratedFromBundle.current.seriesDetails = true;
-      setSeriesDetailsData(detailsBundle.seriesDetails);
+      const sd = detailsBundle.seriesDetails;
+      const hasEnrichment = !!(sd.title?.credits?.cast?.length || sd.title?.ratings?.length);
+      hydratedFromBundle.current.seriesDetails = hasEnrichment;
+      setSeriesDetailsData(sd);
       setSeriesDetailsLoading(false);
+      if (!hasEnrichment) {
+        console.log('[details-bundle] series details missing enrichment (credits/ratings), will retry individually');
+      }
     }
     if (!hydratedFromBundle.current.similar) {
       hydratedFromBundle.current.similar = true;
@@ -321,23 +345,28 @@ export function useDetailsData(params: UseDetailsDataParams): DetailsDataResult 
     if (!bundleReady) return;
     if (hydratedFromBundle.current.movieDetails) return;
     let cancelled = false;
-    setMovieDetailsLoading(true);
+    // Only show loading if we don't already have partial data from the bundle
+    if (!movieDetails) setMovieDetailsLoading(true);
+    console.log('[details] fetching movie details individually (bundle had no enrichment)');
     apiService
       .getMovieDetails(movieDetailsQuery)
       .then((details) => {
         if (cancelled) return;
         setMovieDetails(details);
         setMovieDetailsLoading(false);
+        hydratedFromBundle.current.movieDetails = true;
       })
       .catch((error) => {
         if (cancelled) return;
         console.warn('[details] movie metadata fetch failed', error);
-        setMovieDetails(null);
-        setMovieDetailsError(error instanceof Error ? error.message : 'Failed to load details');
+        // Don't clear existing bundle data on failure — keep the overview at least
+        if (!movieDetails) {
+          setMovieDetailsError(error instanceof Error ? error.message : 'Failed to load details');
+        }
         setMovieDetailsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [movieDetailsQuery, bundleReady]);
+  }, [movieDetailsQuery, bundleReady]); // eslint-disable-line react-hooks/exhaustive-deps -- movieDetails read is intentional stale check
 
   // Fetch similar content (individual fallback)
   useEffect(() => {
@@ -383,7 +412,9 @@ export function useDetailsData(params: UseDetailsDataParams): DetailsDataResult 
     if (!bundleReady) return;
     if (hydratedFromBundle.current.seriesDetails) return;
     let cancelled = false;
-    setSeriesDetailsLoading(true);
+    // Only show loading if we don't already have partial data from the bundle
+    if (!seriesDetailsData) setSeriesDetailsLoading(true);
+    console.log('[details] fetching series details individually (bundle had no enrichment)');
     apiService
       .getSeriesDetails({
         tvdbId: tvdbIdNumber || undefined,
@@ -396,15 +427,19 @@ export function useDetailsData(params: UseDetailsDataParams): DetailsDataResult 
         if (cancelled) return;
         setSeriesDetailsData(details);
         setSeriesDetailsLoading(false);
+        hydratedFromBundle.current.seriesDetails = true;
       })
       .catch((error) => {
         if (cancelled) return;
         console.warn('[details] series metadata fetch failed', error);
-        setSeriesDetailsData(null);
+        // Don't clear existing bundle data on failure — keep seasons/overview
+        if (!seriesDetailsData) {
+          setSeriesDetailsData(null);
+        }
         setSeriesDetailsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [isSeries, title, titleId, tvdbIdNumber, tmdbIdNumber, yearNumber, bundleReady]);
+  }, [isSeries, title, titleId, tvdbIdNumber, tmdbIdNumber, yearNumber, bundleReady]); // eslint-disable-line react-hooks/exhaustive-deps -- seriesDetailsData read is intentional stale check
 
   // Fetch trailers
   useEffect(() => {
