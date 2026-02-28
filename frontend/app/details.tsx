@@ -1662,8 +1662,7 @@ export default function DetailsScreen() {
         // Scaled proportionally to actual viewport height.
         const scale = windowHeight / TV_REFERENCE_HEIGHT;
         if (key === 'actions') return Math.round(900 * scale);
-        if (key === 'seasons') return Math.round(540 * scale);
-        // Episodes, cast, similar — near top with heading visible
+        // Episodes/seasons, cast, similar — near top with heading visible
         return Math.round(130 * scale);
       };
 
@@ -1710,17 +1709,26 @@ export default function DetailsScreen() {
     (area: 'seasons' | 'episodes' | 'actions' | 'cast' | 'similar') => {
       if (!Platform.isTV) return;
       if (currentTVFocusAreaRef.current === area) return;
+      // Seasons and episodes share the same visual section — don't scroll when
+      // focus moves between them (e.g. selecting a new season triggers episode
+      // list re-render which can briefly fire focus events on both rows).
+      const prev = currentTVFocusAreaRef.current;
+      const isCarouselInternal =
+        (prev === 'seasons' || prev === 'episodes') &&
+        (area === 'seasons' || area === 'episodes');
       // Capture the actions scroll position before leaving
-      if (currentTVFocusAreaRef.current === 'actions' && area !== 'actions') {
+      if (prev === 'actions' && area !== 'actions') {
         trailersHook.dismissTrailerAutoPlay();
       }
       currentTVFocusAreaRef.current = area;
+      if (isCarouselInternal) return;
       // Hide/show scroll indicator based on focus area
       tvScrollIndicatorVisible.value = withTiming(area === 'actions' ? 1 : 0, { duration: 300 });
       if (area === 'actions') {
         scrollToSection('actions');
       } else {
-        scrollToSection(area);
+        // Use 'episodes' key for both seasons and episodes so viewport offset is consistent
+        scrollToSection(area === 'seasons' ? 'episodes' : area);
       }
     },
     [trailersHook.dismissTrailerAutoPlay, scrollToSection, tvScrollIndicatorVisible],
