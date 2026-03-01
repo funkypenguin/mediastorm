@@ -1895,7 +1895,7 @@ function SettingsScreen() {
           <SpatialNavigationRoot isActive={isActive} onDirectionHandledWithoutMovement={handleDirectionWithoutMovement}>
             <View style={styles.tvLayoutContainer}>
               {/* Top spacing - scales with viewport height */}
-              <TVSpacer size={24} />
+              <TVSpacer size={100} />
               {/* Header Section - at top of screen */}
               <View style={styles.tvHeader}>
                 <Text style={styles.tvScreenTitle}>Settings</Text>
