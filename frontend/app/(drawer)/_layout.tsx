@@ -150,6 +150,7 @@ export default function DrawerLayout() {
           <Stack.Screen name="search" />
           <Stack.Screen name="lists" />
           <Stack.Screen name="watchlist" />
+          <Stack.Screen name="oscars" />
           <Stack.Screen name="live" />
           <Stack.Screen name="profiles" />
           <Stack.Screen name="downloads" />

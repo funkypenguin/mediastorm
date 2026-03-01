@@ -6,6 +6,7 @@ import { useMenuContext } from '@/components/MenuContext';
 import { useUserProfiles } from '@/components/UserProfilesContext';
 import { useWatchlistActions, useWatchlistData } from '@/components/WatchlistContext';
 import { CategoryFilterModal } from '@/components/CategoryFilterModal';
+import { OSCARS_2026_CATEGORIES } from '@/constants/oscars2026';
 import { SEASONAL_LISTS } from '@/constants/seasonal';
 import { apiService, type Title, type TrendingItem, type PersonDetails, type SeriesWatchState } from '@/services/api';
 import { mapWatchlistToTitles } from '@/services/watchlist';
@@ -285,7 +286,8 @@ export default function WatchlistScreen() {
   const isSeasonalShelf = !!shelfId?.startsWith('seasonal-');
   const isGeminiRecs = shelfId === 'gemini-recs';
   const isCustomAi = shelfId === 'custom-ai' && !!aiQuery;
-  const needsProgressiveLoading = isTrendingMovies || isTrendingTV || isCustomList || isGenreShelf || isSeasonalShelf || isGeminiRecs || isCustomAi;
+  const isOscarShelf = !!shelfId?.startsWith('oscar-');
+  const needsProgressiveLoading = isTrendingMovies || isTrendingTV || isCustomList || isGenreShelf || isSeasonalShelf || isGeminiRecs || isCustomAi || isOscarShelf;
 
   // Fetch similar/recommendation data when in similar mode
   useEffect(() => {
@@ -415,6 +417,23 @@ export default function WatchlistScreen() {
           );
           items = response.items;
           total = response.total;
+        } else if (isOscarShelf && shelfId) {
+          const categoryId = shelfId.replace('oscar-', '');
+          const category = OSCARS_2026_CATEGORIES.find((c) => c.id === categoryId);
+          if (category) {
+            const response = await apiService.getCuratedList(category.nominees, category.name);
+            // Map person/country names onto posters as subtitles
+            const nomineeByImdb = new Map(
+              category.nominees
+                .filter((n) => n.personName || n.country)
+                .map((n) => [n.imdbId, n.personName ?? n.country]),
+            );
+            items = response.items.map((item) => {
+              const subtitle = item.title.imdbId ? nomineeByImdb.get(item.title.imdbId) : undefined;
+              return subtitle ? { ...item, title: { ...item.title, cardSubtitle: subtitle } } : item;
+            });
+            total = items.length;
+          }
         }
 
         if (isInitial) {
@@ -441,6 +460,7 @@ export default function WatchlistScreen() {
       isSeasonalShelf,
       isGeminiRecs,
       isCustomAi,
+      isOscarShelf,
       aiQuery,
       shelfId,
       shelfConfig?.listUrl,
@@ -917,13 +937,18 @@ export default function WatchlistScreen() {
     if (isSimilarShelf && seedTitle) return `Because you watched ${decodeURIComponent(seedTitle)}`;
     if (isGeminiRecs) return 'Recommended For You';
     if (isCustomAi && aiQuery) return aiQuery;
+    if (isOscarShelf && shelfId) {
+      const categoryId = shelfId.replace('oscar-', '');
+      const category = OSCARS_2026_CATEGORIES.find((c) => c.id === categoryId);
+      if (category) return category.name;
+    }
     if (isSeasonalShelf) {
       const seasonalId = shelfId?.replace('seasonal-', '');
       const seasonal = SEASONAL_LISTS.find((s) => s.id === seasonalId);
       if (seasonal) return seasonal.name;
     }
     return 'Explore';
-  }, [isExploreMode, isPersonMode, personDetails?.person.name, personName, isCollectionMode, collectionName, shelfConfig?.name, shelfId, isGenreShelf, genreName, isSimilarShelf, seedTitle, isSeasonalShelf, isCustomAi, aiQuery]);
+  }, [isExploreMode, isPersonMode, personDetails?.person.name, personName, isCollectionMode, collectionName, shelfConfig?.name, shelfId, isGenreShelf, genreName, isSimilarShelf, seedTitle, isSeasonalShelf, isOscarShelf, isCustomAi, aiQuery]);
 
   // Tab title - show "Explore" when in explore mode, otherwise "Watchlist"
   const tabTitle = isExploreMode ? 'Explore' : 'Watchlist';

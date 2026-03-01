@@ -269,23 +269,25 @@ const createStyles = (theme: NovaTheme) => {
       zIndex: 1,
     },
     subtitleCompact: {
-      ...theme.typography.caption.sm,
-      color: theme.colors.accent.primary,
+      fontSize: theme.typography.caption.sm.fontSize,
+      lineHeight: theme.typography.caption.sm.lineHeight,
+      color: '#fff',
       textAlign: 'center',
-      fontWeight: '600',
+      fontWeight: '400',
+      fontStyle: 'italic',
       zIndex: 1,
     },
     subtitleTV: {
-      ...theme.typography.body.sm,
-      ...(isTV
-        ? {
-            fontSize: Math.round(theme.typography.body.sm.fontSize * 1.25 * tvTextScale),
-            lineHeight: Math.round(theme.typography.body.sm.lineHeight * 1.25 * tvTextScale),
-          }
-        : null),
-      color: theme.colors.accent.primary,
+      fontSize: isTV
+        ? Math.round(theme.typography.body.sm.fontSize * 1.25 * tvTextScale)
+        : theme.typography.body.sm.fontSize,
+      lineHeight: isTV
+        ? Math.round(theme.typography.body.sm.lineHeight * 1.25 * tvTextScale)
+        : theme.typography.body.sm.lineHeight,
+      color: '#fff',
       textAlign: 'center',
-      fontWeight: '600',
+      fontWeight: '400',
+      fontStyle: 'italic',
       zIndex: 1,
     },
     yearPlaceholder: {
@@ -542,7 +544,7 @@ const MediaItem = memo(function MediaItem({
               <LinearGradient
                 pointerEvents="none"
                 colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.7)', 'rgba(0,0,0,0.95)']}
-                locations={[0, 0.6, 1]}
+                locations={title.cardSubtitle ? [0, 0.4, 1] : [0, 0.6, 1]}
                 start={{ x: 0.5, y: 0 }}
                 end={{ x: 0.5, y: 1 }}
                 style={styles.textGradient}
@@ -662,7 +664,7 @@ const MediaItem = memo(function MediaItem({
           <LinearGradient
             pointerEvents="none"
             colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.7)', 'rgba(0,0,0,0.95)']}
-            locations={[0, 0.6, 1]}
+            locations={title.cardSubtitle ? [0, 0.4, 1] : [0, 0.6, 1]}
             start={{ x: 0.5, y: 0 }}
             end={{ x: 0.5, y: 1 }}
             style={styles.textGradient}

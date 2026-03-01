@@ -213,11 +213,13 @@ const createStyles = (theme: NovaTheme, screenWidth?: number, parentPadding: num
       zIndex: 1,
     },
     cardSubtitle: {
-      ...theme.typography.caption.sm,
-      color: theme.colors.accent.primary,
+      fontSize: theme.typography.caption.sm.fontSize,
+      lineHeight: theme.typography.caption.sm.lineHeight,
+      color: '#fff',
       textAlign: 'center',
       zIndex: 1,
-      fontWeight: '600',
+      fontWeight: '400',
+      fontStyle: 'italic',
     },
     placeholder: {
       flex: 1,
@@ -548,7 +550,7 @@ const MediaGrid = forwardRef<MediaGridHandle, MediaGridProps>(function MediaGrid
                     <LinearGradient
                       pointerEvents="none"
                       colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.7)', 'rgba(0,0,0,0.95)']}
-                      locations={[0, 0.6, 1]}
+                      locations={item.cardSubtitle ? [0, 0.4, 1] : [0, 0.6, 1]}
                       start={{ x: 0.5, y: 0 }}
                       end={{ x: 0.5, y: 1 }}
                       style={styles.cardTextGradient}

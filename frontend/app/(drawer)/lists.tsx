@@ -289,7 +289,7 @@ function TVAISection({
                     const q = aiQuery.trim();
                     if (q) {
                       router.push({
-                        pathname: '/(drawer)/watchlist',
+                        pathname: '/shelf',
                         params: { shelf: 'custom-ai', aiQuery: q },
                       } as any);
                       setAiQuery('');
@@ -448,6 +448,14 @@ export default function ListsScreen() {
 
   // Seasonal lists active right now
   const seasonalLists = useMemo(() => getActiveSeasonalLists(), []);
+
+  // Check if we're in Oscar season (Jan 15 - Mar 31)
+  const isOscarSeason = useMemo(() => {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const day = now.getDate();
+    return (month === 1 && day >= 15) || month === 2 || (month === 3 && day <= 31);
+  }, []);
 
   // Fetch a backdrop preview for custom mdblist shelves and seasonal lists
   const [listBackdrops, setListBackdrops] = useState<Record<string, string>>({});
@@ -622,7 +630,7 @@ export default function ListsScreen() {
   const navigateToShelf = useCallback(
     (shelf: string, params?: Record<string, string>) => {
       router.push({
-        pathname: '/(drawer)/watchlist',
+        pathname: '/shelf',
         params: { shelf, ...params },
       } as any);
     },
@@ -688,7 +696,7 @@ export default function ListsScreen() {
           posterUrls={watchlistPosterUrls}
         />
       ),
-      onPress: () => router.push('/(drawer)/watchlist' as any),
+      onPress: () => router.push('/shelf' as any),
     });
   }
   if (personalCards.length > 0) {
@@ -834,12 +842,28 @@ export default function ListsScreen() {
   }
 
   // Seasonal — backdrop art from a random item in each seasonal list
-  if (seasonalLists.length > 0) {
-    sections.push({
-      title: 'Seasonal',
-      key: 'seasonal',
-      aspectRatio: DEFAULT_ASPECT,
-      cards: seasonalLists.map((list) => ({
+  if (seasonalLists.length > 0 || isOscarSeason) {
+    const seasonalCards: ListCardData[] = [];
+
+    // Oscars 2026 nominees card — links to the categories screen
+    if (isOscarSeason) {
+      seasonalCards.push({
+        key: 'oscars-2026',
+        content: (
+          <ListCard
+            variant="backdrop"
+            title="Oscars 2026"
+            seedTitle="98th Academy Awards"
+            backdropUrl="https://www.cinemamoderne.com/wp-content/uploads/2026/02/1200x627-Q80_d11c3973e76f487fe8c090471ce29dc8-730x381.jpg"
+          />
+        ),
+        onPress: () => router.push({ pathname: '/(drawer)/oscars' } as any),
+      });
+    }
+
+    // Existing seasonal list cards
+    seasonalCards.push(
+      ...seasonalLists.map((list) => ({
         key: `seasonal-${list.id}`,
         content: (
           <ListCard
@@ -851,6 +875,13 @@ export default function ListsScreen() {
         ),
         onPress: () => navigateToShelf(`seasonal-${list.id}`),
       })),
+    );
+
+    sections.push({
+      title: 'Seasonal',
+      key: 'seasonal',
+      aspectRatio: DEFAULT_ASPECT,
+      cards: seasonalCards,
     });
   }
 
@@ -969,7 +1000,7 @@ export default function ListsScreen() {
                       const q = aiQuery.trim();
                       if (q) {
                         router.push({
-                          pathname: '/(drawer)/watchlist',
+                          pathname: '/shelf',
                           params: { shelf: 'custom-ai', aiQuery: q },
                         } as any);
                         setAiQuery('');

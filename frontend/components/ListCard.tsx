@@ -28,6 +28,7 @@ interface GradientCardProps extends BaseCardProps {
   iconName?: string;
   iconFamily?: 'Ionicons' | 'MaterialCommunityIcons';
   tintColor?: string;
+  sheenColor?: string;
   aspectRatio?: number;
 }
 
@@ -109,13 +110,22 @@ export function ListCard(props: ListCardProps) {
             end={{ x: 1, y: 1 }}
             style={[StyleSheet.absoluteFill, styles.gradientBg]}
           />
+          {props.sheenColor && (
+            <LinearGradient
+              colors={['transparent', props.sheenColor, 'transparent']}
+              start={{ x: 0, y: 1 }}
+              end={{ x: 1, y: 0 }}
+              locations={[0.15, 0.5, 0.85]}
+              style={[StyleSheet.absoluteFill, styles.gradientBg]}
+            />
+          )}
           {isFlat ? (
             <View style={styles.gradientContentFlat}>
               {props.iconName && (
                 <CardIcon name={props.iconName} family={props.iconFamily} size={iconSize} />
               )}
               <View style={{ flex: 1 }}>
-                <Text style={styles.gradientTitle} numberOfLines={1}>
+                <Text style={styles.gradientTitle} numberOfLines={Platform.isTV ? 1 : 2}>
                   {props.title}
                 </Text>
                 {props.subtitle && (
@@ -249,7 +259,7 @@ const createStyles = (theme: NovaTheme) =>
     },
     gradientTitle: {
       color: theme.colors.text.primary,
-      fontSize: Platform.isTV ? responsiveSize(18, 14) : 14,
+      fontSize: Platform.isTV ? responsiveSize(18, 14) : 12,
       fontWeight: '600',
     },
     gradientSubtitle: {

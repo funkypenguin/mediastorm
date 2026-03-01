@@ -1390,6 +1390,18 @@ class ApiService {
     );
   }
 
+  // Get curated list items (e.g., Oscar nominees)
+  async getCuratedList(
+    items: { title: string; year: number; imdbId: string; mediaType: string }[],
+    label?: string,
+  ): Promise<{ items: TrendingItem[] }> {
+    return this.request<{ items: TrendingItem[] }>('/lists/curated', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, label }),
+    });
+  }
+
   // Search movies
   async searchMovies(query: string, userId?: string): Promise<SearchResult[]> {
     const encodedQuery = encodeURIComponent(query);
