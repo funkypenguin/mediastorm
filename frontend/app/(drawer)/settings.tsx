@@ -11,10 +11,12 @@ import {
   Switch,
   Text,
   TextInput,
+  Image as RNImage,
   View,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { useAnimatedStyle, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
 
 import {
@@ -43,7 +45,7 @@ import { QRCode } from '@/components/QRCode';
 import RemoteControlManager from '@/services/remote-control/RemoteControlManager';
 import { TVSpacer } from '@/components/TVSpacer';
 import { focusTextInputTV, prefocusTextInputTV } from '@/utils/tv-text-input';
-import { isTV, TV_REFERENCE_HEIGHT } from '@/theme/tokens/tvScale';
+import { isTV, isAndroidTV, TV_REFERENCE_HEIGHT } from '@/theme/tokens/tvScale';
 import type { NovaTheme } from '@/theme';
 import { useTheme } from '@/theme';
 import {
@@ -59,6 +61,8 @@ import { Stack, router } from 'expo-router';
 import { useKonamiCode, KONAMI_SEQUENCE } from '@/hooks/useKonamiCode';
 import { SpaceShooterGame } from '@/components/SpaceShooterGame';
 import { DPad } from '@/components/DPad';
+
+const TV_BRANDING_IMAGE = require('@/assets/images/tv-branding-square.png');
 
 // expo-updates may not be available in all builds (e.g., development builds without it)
 // Use a getter to lazily load the module only when actually accessed
@@ -299,7 +303,8 @@ type SettingsGridItem =
       key?: string;
     }
   | { type: 'shelf-item'; id: string; shelf: BackendShelfConfig; index: number; total: number; key?: string }
-  | { type: 'version-info'; id: string; key?: string };
+  | { type: 'version-info'; id: string; key?: string }
+  | { type: 'check-updates'; id: string; key?: string };
 
 // TextInputModal Props for TV text editing
 interface TextInputModalProps {
@@ -1440,6 +1445,10 @@ function SettingsScreen() {
   const connectionGridData = useMemo<SettingsGridItem[]>(
     () => [
       {
+        type: 'check-updates',
+        id: 'check-updates',
+      },
+      {
         type: 'header',
         id: 'connection-header',
         title: 'Server',
@@ -1766,8 +1775,7 @@ function SettingsScreen() {
             </View>
           );
 
-        case 'version-info': {
-          const versionString = APP_VERSION;
+        case 'check-updates': {
           const isAndroid = Platform.OS === 'android';
           const updateButtonText = isAndroid
             ? githubRelease
@@ -1792,21 +1800,7 @@ function SettingsScreen() {
               : handleCheckForUpdates;
 
           return (
-            <View style={[styles.tvGridItemFullWidth, styles.tvGridItemSpacing, styles.versionInfoContainer]}>
-              <View style={styles.versionInfoRow}>
-                <Text style={styles.versionInfoLabel}>Frontend</Text>
-                <Text style={styles.versionInfoValue}>{versionString}</Text>
-              </View>
-              <View style={styles.versionInfoRow}>
-                <Text style={styles.versionInfoLabel}>Backend</Text>
-                <Text style={styles.versionInfoValue}>{backendVersion ?? 'Unknown'}</Text>
-              </View>
-              <View style={styles.versionInfoRow}>
-                <Text style={styles.versionInfoLabel}>Device ID</Text>
-                <Text style={styles.deviceIdValueTV} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
-                  {clientId ?? 'Loading...'}
-                </Text>
-              </View>
+            <View style={[styles.tvGridItemFullWidth, styles.tvGridItemSpacing]}>
               <View style={styles.versionButtonContainer}>
                 <DefaultFocus>
                   <SpatialNavigationFocusableView
@@ -1843,6 +1837,28 @@ function SettingsScreen() {
                       : 'App updates via TestFlight. Backend updated via Docker.'}
                   </Text>
                 </View>
+              </View>
+            </View>
+          );
+        }
+
+        case 'version-info': {
+          const versionString = APP_VERSION;
+          return (
+            <View style={[styles.tvGridItemFullWidth, styles.tvGridItemSpacing, styles.versionInfoContainer]}>
+              <View style={styles.versionInfoRow}>
+                <Text style={styles.versionInfoLabel}>Frontend</Text>
+                <Text style={styles.versionInfoValue}>{versionString}</Text>
+              </View>
+              <View style={styles.versionInfoRow}>
+                <Text style={styles.versionInfoLabel}>Backend</Text>
+                <Text style={styles.versionInfoValue}>{backendVersion ?? 'Unknown'}</Text>
+              </View>
+              <View style={styles.versionInfoRow}>
+                <Text style={styles.versionInfoLabel}>Device ID</Text>
+                <Text style={styles.deviceIdValueTV} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+                  {clientId ?? 'Loading...'}
+                </Text>
               </View>
             </View>
           );
@@ -1894,6 +1910,59 @@ function SettingsScreen() {
         {Platform.isTV && (
           <SpatialNavigationRoot isActive={isActive} onDirectionHandledWithoutMovement={handleDirectionWithoutMovement}>
             <View style={styles.tvLayoutContainer}>
+              {/* Branding background image - top right, circular vignette */}
+              <View style={{ ...StyleSheet.absoluteFillObject, zIndex: 0, overflow: 'hidden' }} pointerEvents="none">
+                <View style={{ flex: 1, justifyContent: 'flex-start', alignItems: 'flex-end' }}>
+                  <RNImage
+                    source={TV_BRANDING_IMAGE}
+                    style={isAndroidTV
+                      ? { width: '145%', height: '95%', marginRight: -380, marginTop: -15 }
+                      : { width: '135%', height: '90%', marginRight: -600 }
+                    }
+                    resizeMode="contain"
+                  />
+                </View>
+                {/* Horizontal vignette — heavy left fade */}
+                <LinearGradient
+                  colors={['#0b0b0f', '#0b0b0f', '#0b0b0f', '#0b0b0f', 'rgba(11,11,15,0.85)', 'rgba(11,11,15,0.3)', 'transparent', 'transparent', 'rgba(11,11,15,0.3)', 'rgba(11,11,15,0.85)', '#0b0b0f', '#0b0b0f']}
+                  locations={isAndroidTV
+                    ? [0, 0.2, 0.3, 0.38, 0.45, 0.52, 0.6, 0.82, 0.88, 0.93, 0.97, 1]
+                    : [0, 0.15, 0.25, 0.32, 0.4, 0.48, 0.55, 0.7, 0.8, 0.88, 0.95, 1]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={StyleSheet.absoluteFill}
+                />
+                {/* Vertical vignette */}
+                <LinearGradient
+                  colors={['#0b0b0f', '#0b0b0f', 'rgba(11,11,15,0.3)', 'transparent', 'transparent', 'rgba(11,11,15,0.3)', 'rgba(11,11,15,0.85)', '#0b0b0f', '#0b0b0f']}
+                  locations={isAndroidTV
+                    ? [0, 0.02, 0.1, 0.18, 0.55, 0.7, 0.82, 0.92, 1]
+                    : [0, 0.01, 0.06, 0.12, 0.45, 0.6, 0.75, 0.88, 1]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={StyleSheet.absoluteFill}
+                />
+                {/* Diagonal TL-BR — heavy fade on TL corner */}
+                <LinearGradient
+                  colors={['#0b0b0f', '#0b0b0f', '#0b0b0f', 'rgba(11,11,15,0.85)', 'rgba(11,11,15,0.4)', 'transparent', 'transparent', 'rgba(11,11,15,0.4)', 'rgba(11,11,15,0.85)', '#0b0b0f']}
+                  locations={isAndroidTV
+                    ? [0, 0.22, 0.32, 0.4, 0.48, 0.55, 0.72, 0.85, 0.93, 1]
+                    : [0, 0.18, 0.26, 0.34, 0.42, 0.5, 0.6, 0.75, 0.88, 1]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={StyleSheet.absoluteFill}
+                />
+                {/* Diagonal TR-BL — heavy fade on BL corner */}
+                <LinearGradient
+                  colors={['#0b0b0f', 'rgba(11,11,15,0.85)', 'rgba(11,11,15,0.4)', 'transparent', 'transparent', 'rgba(11,11,15,0.4)', 'rgba(11,11,15,0.85)', '#0b0b0f', '#0b0b0f', '#0b0b0f']}
+                  locations={isAndroidTV
+                    ? [0, 0.08, 0.18, 0.32, 0.58, 0.68, 0.78, 0.85, 0.92, 1]
+                    : [0, 0.05, 0.15, 0.28, 0.48, 0.58, 0.68, 0.78, 0.88, 1]}
+                  start={{ x: 1, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={StyleSheet.absoluteFill}
+                />
+              </View>
               {/* Top spacing - scales with viewport height */}
               <TVSpacer size={100} />
               {/* Header Section - at top of screen */}
