@@ -331,11 +331,6 @@ class RemoteControlManager implements RemoteControlManagerInterface {
       return;
     }
 
-    // DEBUG: Log ALL tvOS events to check if Modal blocks select but not directional
-    if (Platform.OS === 'ios' && Platform.isTV && event.eventType !== 'pan' && event.eventType !== 'focus') {
-      console.log('[RemoteControl][ALL-EVENTS]', event.eventType, 'action:', event.eventKeyAction);
-    }
-
     // Handle pan events for tvOS velocity-based navigation
     if (event.eventType === 'pan') {
       this.handlePanEvent(event);

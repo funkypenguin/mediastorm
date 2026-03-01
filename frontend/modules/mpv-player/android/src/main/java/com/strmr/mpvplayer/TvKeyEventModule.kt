@@ -112,14 +112,12 @@ class TvKeyEventModule(private val reactContext: ReactApplicationContext) :
 
         override fun dispatchKeyEvent(event: KeyEvent): Boolean {
             val eventType = KEY_MAPPING[event.keyCode]
-            if (eventType != null) {
-                // Map ACTION_DOWN=0, ACTION_UP=1 (matches RN convention)
-                val action = when (event.action) {
-                    KeyEvent.ACTION_DOWN -> 0
-                    KeyEvent.ACTION_UP -> 1
-                    else -> -1
-                }
-                onKeyEvent(eventType, action)
+            // Only forward ACTION_DOWN to JS. react-native-tvos already sends
+            // its own keyup (action=1) events for nav; forwarding ACTION_UP
+            // from here causes double-toggle (pause→unpause) because the ~300ms
+            // gap between keydown and keyup exceeds the JS dedup window.
+            if (eventType != null && event.action == KeyEvent.ACTION_DOWN) {
+                onKeyEvent(eventType, 0)
             }
             // Always pass through to original so focus navigation still works
             return original.dispatchKeyEvent(event)
