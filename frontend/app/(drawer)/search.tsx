@@ -17,17 +17,19 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useIsFocused } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  ToastAndroid,
   View,
 } from 'react-native';
 import { useTVDimensions } from '@/hooks/useTVDimensions';
@@ -126,6 +128,7 @@ export default function SearchScreen() {
   const styles = useMemo(() => createStyles(theme, screenWidth, screenHeight), [theme, screenWidth, screenHeight]);
   const inputRef = useRef<TextInput>(null);
   const router = useRouter();
+  const { q: voiceQuery } = useLocalSearchParams<{ q?: string }>();
   const { isOpen: isMenuOpen, openMenu } = useMenuContext();
   const { pendingPinUserId, activeUser } = useUserProfiles();
 
@@ -219,6 +222,42 @@ export default function SearchScreen() {
       return updated;
     });
   }, [recentSearchesKey]);
+
+  // Handle voice search query from Android TV remote mic button deep link
+  const voiceQueryConsumedRef = useRef<string | null>(null);
+  useEffect(() => {
+    console.log('[VoiceSearch] useLocalSearchParams q:', voiceQuery);
+    if (voiceQuery && voiceQuery !== voiceQueryConsumedRef.current) {
+      console.log('[VoiceSearch] New voice query received, applying:', voiceQuery);
+      if (Platform.OS === 'android') {
+        ToastAndroid.show(`[VoiceSearch] Searching: "${voiceQuery}"`, ToastAndroid.LONG);
+      }
+      voiceQueryConsumedRef.current = voiceQuery;
+      setQuery(voiceQuery);
+      setSubmittedQuery(voiceQuery);
+      tempQueryRef.current = voiceQuery;
+      saveRecentSearch(voiceQuery);
+    }
+  }, [voiceQuery, saveRecentSearch]);
+
+  // Extra Linking listener for debugging — logs all URL events on the search screen
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !Platform.isTV) return;
+
+    const sub = Linking.addEventListener('url', (event) => {
+      console.log('[VoiceSearch] Linking URL event on search screen:', event.url);
+      ToastAndroid.show(`[VoiceSearch] URL: ${event.url}`, ToastAndroid.LONG);
+    });
+
+    Linking.getInitialURL().then((url) => {
+      console.log('[VoiceSearch] Initial URL on search screen mount:', url);
+      if (url) {
+        ToastAndroid.show(`[VoiceSearch] Initial URL: ${url}`, ToastAndroid.LONG);
+      }
+    });
+
+    return () => sub.remove();
+  }, []);
 
   const filterOptions: Array<{ key: 'all' | 'movie' | 'series'; label: string; icon: keyof typeof Ionicons.glyphMap }> =
     [

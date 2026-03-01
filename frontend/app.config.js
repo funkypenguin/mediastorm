@@ -28,6 +28,7 @@ module.exports = ({ config }) => {
     './plugins/with-android-pip',
     './plugins/with-mpv-player', // MPV native player for Android
     './plugins/with-ksplayer', // KSPlayer native player for iOS/tvOS
+    './plugins/with-android-voice-search', // Handle Shield/Android TV remote mic button
     './plugins/with-large-heap', // Increase Android heap limit for video playback
     './plugins/with-exoplayer-keep-resources', // Preserve ExoPlayer resources during shrinking
     './plugins/with-mmkv-proguard', // Suppress R8 MMKV errors on TV builds
