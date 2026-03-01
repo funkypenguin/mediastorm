@@ -320,6 +320,10 @@ const KILL_ALL_SHELVES = false;
 const DEBUG_TEXTURE_MEMORY = false; // GPU texture memory tracking — logs per-shelf breakdown every 15s
 // === END KILL SWITCHES ===
 
+const TV_BRANDING_IMAGE = require('@/assets/images/tv-branding.jpg');
+const MOBILE_BRANDING_IMAGE = require('@/assets/app-logo-wide.png');
+const BRANDING_CARD_ID = '__branding__';
+
 /** Convert a metadata progress task phase into a human-readable label. */
 function formatProgressPhase(phase: string): string {
   return phase === 'enriching'
@@ -1902,10 +1906,11 @@ function IndexScreen() {
 
     if (KILL_HERO_ENRICHMENT) { console.log('[KILL] Hero enrichment disabled'); return; }
 
-    // Skip explore cards
+    // Skip explore cards — delay loading:false so fade-out from focus debounce completes first
     if (String(focusedDesktopCard.id).startsWith(EXPLORE_CARD_ID_PREFIX)) {
-      setEnrichedHeroState({ data: null, loading: false });
-      return;
+      setEnrichedHeroState({ data: null, loading: true });
+      const t = setTimeout(() => setEnrichedHeroState({ data: null, loading: false }), 350);
+      return () => clearTimeout(t);
     }
 
     // Defer enrichment during initial load (startup) — will trigger after secondary fetches complete
@@ -1915,11 +1920,12 @@ function IndexScreen() {
 
     const cacheKey = `${focusedDesktopCard.mediaType}:${focusedDesktopCard.tmdbId ?? focusedDesktopCard.id}`;
 
-    // Check cache first — instant, no loading flash
+    // Check cache first — delay loading:false so fade-out from focus debounce completes
     const cached = enrichedCacheRef.current.get(cacheKey);
     if (cached) {
-      setEnrichedHeroState({ data: cached, loading: false });
-      return;
+      setEnrichedHeroState({ data: cached, loading: true });
+      const t = setTimeout(() => setEnrichedHeroState({ data: cached, loading: false }), 350);
+      return () => clearTimeout(t);
     }
 
     // Mark loading — hero content hidden until fetch completes
@@ -2009,7 +2015,7 @@ function IndexScreen() {
     if (enrichedLoading || !focusedDesktopCard) {
       heroContentOpacity.value = 0; // Instant hide — no animation delay
     } else {
-      heroContentOpacity.value = isAndroidTV ? 1 : withTiming(1, { duration: 300 });
+      heroContentOpacity.value = withTiming(1, { duration: 300 });
     }
   }, [enrichedLoading, focusedDesktopCard]);
 
@@ -2052,7 +2058,15 @@ function IndexScreen() {
     // Cap the keys set to prevent unbounded memory growth
     capSetSize(heroItemKeysRef.current, MAX_HERO_KEYS_CACHE);
 
-    return stableHeroItemsRef.current;
+    const brandingCard: CardData = {
+      id: BRANDING_CARD_ID,
+      title: '',
+      description: '',
+      headerImage: '',
+      cardImage: '',
+      backdropUrl: '',
+    };
+    return [brandingCard, ...stableHeroItemsRef.current];
   }, [continueWatchingCards, watchlistCards, trendingMovieCards, trendingShowCards, isKidsCuratedMode]);
 
   const heroSource = useMemo<HeroContent>(() => {
@@ -2113,21 +2127,27 @@ function IndexScreen() {
   // Padding to center the first/last items
   const heroPadding = (screenWidth - heroWidth) / 2;
 
-  // Handle hero carousel scroll
-  const handleHeroScroll = useCallback(
+  // Update pagination dot in real-time as user scrolls
+  const handleHeroLiveScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const offsetX = event.nativeEvent.contentOffset.x;
       const newIndex = Math.round(offsetX / heroSnapInterval);
       if (newIndex !== mobileHeroIndex && newIndex >= 0 && newIndex < mobileHeroItems.length) {
-        isUserScrolling.current = true;
         setMobileHeroIndex(newIndex);
-        // Reset flag after a short delay
-        setTimeout(() => {
-          isUserScrolling.current = false;
-        }, 100);
       }
     },
     [heroSnapInterval, mobileHeroIndex, mobileHeroItems.length],
+  );
+
+  // Pause auto-rotation after user swipe
+  const handleHeroScrollEnd = useCallback(
+    () => {
+      isUserScrolling.current = true;
+      setTimeout(() => {
+        isUserScrolling.current = false;
+      }, 5000);
+    },
+    [],
   );
 
   // Auto-rotate hero on mobile
@@ -2136,17 +2156,18 @@ function IndexScreen() {
       return;
     }
 
-    const interval = setInterval(() => {
-      if (isUserScrolling.current) return; // Don't auto-rotate while user is swiping
+    const isBrandingCard = mobileHeroItems[mobileHeroIndex]?.id === BRANDING_CARD_ID;
+    const delay = isBrandingCard ? 8000 : 5000;
+    const timeout = setTimeout(() => {
+      if (isUserScrolling.current) return;
       setMobileHeroIndex((prev) => {
         const nextIndex = (prev + 1) % mobileHeroItems.length;
-        // Scroll to next item
         heroScrollRef.current?.scrollTo({ x: nextIndex * heroSnapInterval, animated: true });
         return nextIndex;
       });
-    }, 5000); // Rotate every 5 seconds
+    }, delay);
 
-    return () => clearInterval(interval);
+    return () => clearTimeout(timeout);
   }, [shouldUseMobileLayout, mobileHeroItems.length, focused, heroSnapInterval]);
 
   // Re-align hero scroll position when screen dimensions change (e.g., rotation)
@@ -2370,10 +2391,8 @@ function IndexScreen() {
         ? 400  // Wait for navigation to settle before swapping hero content
         : 350;
 
-      // Fade out while navigating — skip on Android TV to keep old content visible until swap
-      if (!isAndroidTV) {
-        heroContentOpacity.value = withTiming(0, { duration: debounceMs });
-      }
+      // Fade out while navigating
+      heroContentOpacity.value = withTiming(0, { duration: debounceMs });
       focusDebounceRef.current = setTimeout(() => {
         // Batch to prevent two separate renders from setTimeout (not auto-batched on RN bridge)
         unstable_batchedUpdates(() => {
@@ -2647,40 +2666,49 @@ function IndexScreen() {
                     ref={heroScrollRef}
                     horizontal
                     showsHorizontalScrollIndicator={false}
-                    onMomentumScrollEnd={handleHeroScroll}
+                    onScroll={handleHeroLiveScroll}
+                    onMomentumScrollEnd={handleHeroScrollEnd}
                     scrollEventThrottle={16}
                     snapToInterval={heroSnapInterval}
                     snapToAlignment="start"
                     decelerationRate="fast"
                     removeClippedSubviews={Platform.OS === 'android'}
                     contentContainerStyle={{ paddingHorizontal: heroPadding }}>
-                    {mobileHeroItems.map((item, index) => (
+                    {mobileHeroItems.map((item, index) => {
+                      const isBranding = item.id === BRANDING_CARD_ID;
+                      return (
                       <Pressable
                         key={`hero-${item.id}-${index}`}
                         style={[mobileStyles.hero, { width: heroWidth, marginRight: heroGap }]}
-                        onPress={() => handleCardSelect(item)}>
+                        onPress={() => { if (!isBranding) handleCardSelect(item); }}>
                         <Image
-                          source={item.backdropUrl || item.headerImage}
-                          style={mobileStyles.heroImage}
-                          contentFit="cover"
+                          source={isBranding ? MOBILE_BRANDING_IMAGE : (item.backdropUrl || item.headerImage)}
+                          style={isBranding ? [mobileStyles.heroImage, { backgroundColor: '#0b0b0f' }] : mobileStyles.heroImage}
+                          contentFit={isBranding ? 'contain' : 'cover'}
+                          contentPosition={isBranding ? 'center' : undefined}
                         />
-                        <LinearGradient
-                          colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.6)', 'rgba(0,0,0,0.95)']}
-                          locations={[0, 0.6, 1]}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 0, y: 1 }}
-                          style={mobileStyles.heroGradient}
-                        />
-                        <View style={mobileStyles.heroTextContainer}>
-                          <Text style={mobileStyles.heroTitle} numberOfLines={2}>
-                            {item.title}
-                          </Text>
-                          <Text style={mobileStyles.heroDescription} numberOfLines={3}>
-                            {item.seriesOverview ?? item.description}
-                          </Text>
-                        </View>
+                        {!isBranding && (
+                          <>
+                            <LinearGradient
+                              colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.6)', 'rgba(0,0,0,0.95)']}
+                              locations={[0, 0.6, 1]}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={mobileStyles.heroGradient}
+                            />
+                            <View style={mobileStyles.heroTextContainer}>
+                              <Text style={mobileStyles.heroTitle} numberOfLines={2}>
+                                {item.title}
+                              </Text>
+                              <Text style={mobileStyles.heroDescription} numberOfLines={3}>
+                                {item.seriesOverview ?? item.description}
+                              </Text>
+                            </View>
+                          </>
+                        )}
                       </Pressable>
-                    ))}
+                      );
+                    })}
                   </ScrollView>
                   {/* Pagination dots */}
                   <View style={mobileStyles.heroPagination}>
@@ -2802,19 +2830,58 @@ function IndexScreen() {
       accessibilityElementsHidden={isMenuOpen}
       importantForAccessibility={isMenuOpen ? 'no-hide-descendants' : 'auto'}>
       {/* Full-screen background art for TV — crossfades as user navigates between items */}
-      {!KILL_HERO_BACKGROUND_ART && Platform.isTV && focusedDesktopCard && (
-        <View style={desktopStyles?.styles.tvBackgroundArt} pointerEvents="none">
+      {!KILL_HERO_BACKGROUND_ART && Platform.isTV && focusedDesktopCard && (() => {
+        const isExploreFocused = String(focusedDesktopCard.id).startsWith(EXPLORE_CARD_ID_PREFIX);
+        const bgSource = isExploreFocused
+          ? TV_BRANDING_IMAGE
+          : (enrichedHeroData?.backdropUrl || focusedDesktopCard.backdropUrl || focusedDesktopCard.headerImage);
+        return (
+        <View style={isExploreFocused ? { ...StyleSheet.absoluteFillObject, zIndex: 0 } : desktopStyles?.styles.tvBackgroundArt} pointerEvents="none">
           {isAndroidTV ? (
-            <RNImage
-              source={{ uri: enrichedHeroData?.backdropUrl || focusedDesktopCard.backdropUrl || focusedDesktopCard.headerImage }}
-              style={StyleSheet.absoluteFill}
-              resizeMode="cover"
-              fadeDuration={300}
-            />
+            isExploreFocused ? (
+              <Animated.View style={[StyleSheet.absoluteFill, heroContentAnimStyle, { justifyContent: 'flex-start', alignItems: 'flex-end' }]}>
+                <RNImage
+                  source={TV_BRANDING_IMAGE}
+                  style={{ width: '97%', height: '63%', marginRight: -120, marginTop: -10 }}
+                  resizeMode="contain"
+                />
+              </Animated.View>
+            ) : (
+              <Animated.View style={[StyleSheet.absoluteFill, heroContentAnimStyle]}>
+                <RNImage
+                  source={{ uri: enrichedHeroData?.backdropUrl || focusedDesktopCard.backdropUrl || focusedDesktopCard.headerImage }}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode="cover"
+                  fadeDuration={300}
+                />
+              </Animated.View>
+            )
+          ) : isExploreFocused ? (
+            <Animated.View style={[StyleSheet.absoluteFill, heroContentAnimStyle, { justifyContent: 'flex-start', alignItems: 'flex-end', paddingTop: 0, paddingRight: 0 }]}>
+              <RNImage
+                source={TV_BRANDING_IMAGE}
+                style={{ width: '90%', height: '60%', marginRight: -200 }}
+                resizeMode="contain"
+              />
+              <LinearGradient
+                colors={['#0b0b0f', 'rgba(11,11,15,0.6)', 'rgba(11,11,15,0.2)', 'transparent']}
+                locations={[0, 0.2, 0.4, 0.7]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={StyleSheet.absoluteFill}
+              />
+              <LinearGradient
+                colors={['transparent', 'rgba(11,11,15,0.1)', 'rgba(11,11,15,0.8)', '#0b0b0f']}
+                locations={[0, 0.7, 0.85, 1]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+            </Animated.View>
           ) : (
             <Animated.View style={[StyleSheet.absoluteFill, heroContentAnimStyle]}>
               <Image
-                source={enrichedHeroData?.backdropUrl || focusedDesktopCard.backdropUrl || focusedDesktopCard.headerImage}
+                source={bgSource}
                 style={StyleSheet.absoluteFill}
                 contentFit="cover"
                 transition={500}
@@ -2866,7 +2933,8 @@ function IndexScreen() {
             </>
           )}
         </View>
-      )}
+        );
+      })()}
       {Platform.isTV && (
         <View style={desktopStyles?.styles.topSpacer} pointerEvents="none">
           {!KILL_HERO_OVERLAY && focusedDesktopCard && (
@@ -3255,12 +3323,9 @@ const ShelfCardContent = React.memo(
                 end={GRADIENT_END}
                 style={styles.cardTextGradient}
               />
-              <Text style={isAndroidTV ? styles.landscapeCardTitleAndroidTV : styles.landscapeCardTitle} numberOfLines={1}>
-                {card.title}
+              <Text style={isAndroidTV ? styles.landscapeCardTitleAndroidTV : styles.landscapeCardTitle} numberOfLines={2}>
+                {card.title}{card.year ? <Text style={{ fontStyle: 'italic' }}>  {card.year}</Text> : null}
               </Text>
-              {card.year ? (
-                <Text style={isAndroidTV ? styles.landscapeCardMetaAndroidTV : styles.landscapeCardMeta}>{card.year}</Text>
-              ) : null}
             </View>
             {/* Coming soon badge (top-right) */}
             {card.isUnreleased && (
@@ -3822,14 +3887,14 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
     // Pre-scaled variants for Android TV hero (avoids creating inline style objects on every render)
     topYearScaled: {
       ...theme.typography.body.lg,
-      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 2.1 : 1.75) * tvScale * 1.25),
-      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 2.1 : 1.75) * tvScale * 1.25),
+      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 3.12 : 1.75) * tvScale * 1.25),
+      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 3.12 : 1.75) * tvScale * 1.25),
       color: theme.colors.text.secondary,
     },
     topDescriptionScaled: {
       ...theme.typography.body.lg,
-      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 1.8 : 1.5) * tvScale * 1.25),
-      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 1.8 : 1.5) * tvScale * 1.25),
+      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 2.73 : 1.5) * tvScale * 1.25),
+      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 2.73 : 1.5) * tvScale * 1.25),
       color: theme.colors.text.secondary,
     },
     heroContainer: {
@@ -4060,11 +4125,11 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
       zIndex: 3, // Above unreleased overlay (zIndex 2)
     },
     landscapeCardTitle: {
-      ...(isTV ? theme.typography.body.md : theme.typography.body.md),
+      ...(isTV ? theme.typography.body.sm : theme.typography.body.md),
       ...(isTV
         ? {
-            fontSize: Math.round(theme.typography.body.md.fontSize * 1.4 * tvScale),
-            lineHeight: Math.round(theme.typography.body.md.lineHeight * 1.4 * tvScale),
+            fontSize: Math.round(theme.typography.body.sm.fontSize * 1.2 * tvScale),
+            lineHeight: Math.round(theme.typography.body.sm.lineHeight * 1.2 * tvScale),
           }
         : null),
       color: theme.colors.text.primary,
@@ -4074,8 +4139,8 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
     },
     landscapeCardTitleAndroidTV: {
       ...theme.typography.body.md,
-      fontSize: Math.round(theme.typography.body.md.fontSize * 1.4 * androidTVTitleScale),
-      lineHeight: Math.round(theme.typography.body.md.lineHeight * 1.4 * androidTVTitleScale),
+      fontSize: Math.round(theme.typography.body.md.fontSize * 1.105),
+      lineHeight: Math.round(theme.typography.body.md.lineHeight * 1.105),
       color: theme.colors.text.primary,
       textAlign: 'left',
       zIndex: 1,
@@ -4094,9 +4159,9 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
       zIndex: 1,
     },
     landscapeCardMetaAndroidTV: {
-      ...theme.typography.body.sm,
-      fontSize: Math.round(theme.typography.body.sm.fontSize * 1.2 * androidTVMetaScale),
-      lineHeight: Math.round(theme.typography.body.sm.lineHeight * 1.2 * androidTVMetaScale),
+      ...theme.typography.body.md,
+      fontSize: Math.round(theme.typography.body.md.fontSize * 0.65),
+      lineHeight: Math.round(theme.typography.body.md.lineHeight * 0.65),
       color: theme.colors.text.secondary,
       textAlign: 'left',
       zIndex: 1,
@@ -4712,7 +4777,7 @@ function mapContinueWatchingToCards(
 
       return {
         id: `${item.seriesId}:${code}`,
-        title: item.seriesTitle,
+        title: next?.title ? `${item.seriesTitle} • ${code} – ${next.title}` : `${item.seriesTitle} • ${code}`,
         description: next?.title ? `Next: ${code} • ${next.title}` : `Next: ${code}`,
         headerImage,
         cardImage,
