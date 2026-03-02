@@ -1,6 +1,8 @@
 import type { NovaTheme } from '@/theme';
+import { isTV, TV_REFERENCE_HEIGHT } from '@/theme/tokens/tvScale';
+import { useTVDimensions } from '@/hooks/useTVDimensions';
 import { Ionicons } from '@expo/vector-icons';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   SpatialNavigationRoot,
@@ -26,7 +28,10 @@ export const ResumePlaybackModal = ({
   theme,
   percentWatched,
 }: ResumePlaybackModalProps) => {
-  const styles = createStyles(theme);
+  const { height: screenHeight } = useTVDimensions();
+  const effectiveHeight = screenHeight > 0 ? screenHeight : isTV ? 1080 : 812;
+  const vh = effectiveHeight / TV_REFERENCE_HEIGHT;
+  const styles = useMemo(() => createStyles(theme, vh), [theme, vh]);
 
   const handleResume = useCallback(() => {
     onResume();
@@ -78,7 +83,7 @@ export const ResumePlaybackModal = ({
                             <View style={styles.optionContent}>
                               <Ionicons
                                 name="play-circle"
-                                size={32}
+                                size={isTV ? Math.round(48 * vh) : 32}
                                 color={
                                   isFocused && Platform.isTV ? theme.colors.text.inverse : theme.colors.accent.primary
                                 }
@@ -114,7 +119,7 @@ export const ResumePlaybackModal = ({
                           <View style={styles.optionContent}>
                             <Ionicons
                               name="refresh-circle"
-                              size={32}
+                              size={isTV ? Math.round(48 * vh) : 32}
                               color={
                                 isFocused && Platform.isTV ? theme.colors.text.inverse : theme.colors.text.secondary
                               }
@@ -147,7 +152,8 @@ export const ResumePlaybackModal = ({
   );
 };
 
-const createStyles = (theme: NovaTheme) => {
+const createStyles = (theme: NovaTheme, vh: number) => {
+  const isTVPlatform = Platform.isTV;
   return StyleSheet.create({
     overlay: {
       position: 'absolute',
@@ -176,10 +182,12 @@ const createStyles = (theme: NovaTheme) => {
       pointerEvents: 'box-none',
     },
     modal: {
-      width: '100%',
-      maxWidth: 500,
+      width: isTVPlatform ? '50%' : '100%',
+      maxWidth: isTVPlatform ? Math.round(700 * vh) : 500,
       backgroundColor: theme.colors.background.surface,
       borderRadius: theme.radius.lg,
+      borderWidth: isTVPlatform ? Math.max(1, Math.round(2 * vh)) : 0,
+      borderColor: isTVPlatform ? theme.colors.border.subtle : undefined,
       shadowColor: '#000',
       shadowOffset: {
         width: 0,
@@ -220,13 +228,13 @@ const createStyles = (theme: NovaTheme) => {
       padding: theme.spacing.lg,
       borderRadius: theme.radius.md,
       backgroundColor: theme.colors.background.base,
-      borderWidth: 2,
+      borderWidth: isTVPlatform ? Math.max(1, Math.round(2 * vh)) : 2,
       borderColor: theme.colors.border.subtle,
     },
     optionFocused: {
       backgroundColor: theme.colors.accent.primary,
       borderColor: theme.colors.accent.primary,
-      transform: Platform.isTV ? [{ scale: 1.05 }] : [],
+      transform: isTVPlatform ? [{ scale: 1.05 }] : [],
     },
     optionContent: {
       flexDirection: 'row',
