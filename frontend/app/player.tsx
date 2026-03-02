@@ -6061,7 +6061,7 @@ export default function PlayerScreen() {
                 subtitle: seriesTitle || undefined,
                 imageUri: headerImage || undefined,
               }}
-              subtitleSize={(userSettings?.playback?.subtitleSize ?? settings?.playback?.subtitleSize ?? 1.0) * (isAndroidTV ? 0.75 : 1.0)}
+              subtitleSize={(userSettings?.playback?.subtitleSize ?? settings?.playback?.subtitleSize ?? 1.0) * (isAndroidTV ? 0.75 : Platform.OS === 'android' ? 0.6 : 1.0)}
               mediaType={mediaType}
               onPictureInPictureStatusChanged={handlePictureInPictureStatusChanged}
               onPlaybackStateChanged={handleNativePlaybackStateChanged}
