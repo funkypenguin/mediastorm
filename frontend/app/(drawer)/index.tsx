@@ -98,6 +98,7 @@ const HERO_PLACEHOLDER: HeroContent = {
 };
 
 const EXPLORE_CARD_ID_PREFIX = '__explore__';
+const PLACEHOLDER_CARD_ID = '__shelf_placeholder__';
 const MAX_SHELF_ITEMS_ON_HOME = 14;
 
 // Simple hash function for seeded randomness
@@ -303,6 +304,7 @@ const SECONDARY_FETCH_DELAY_MS = Platform.isTV ? 2000 : 0;
 const DEBUG_INDEX_RENDERS = __DEV__ && false; // Set to true for render debugging
 const DEBUG_PERF = __DEV__ && false; // Performance profiling
 const DEBUG_VNAV = false; // Vertical navigation timing
+const DEBUG_SHELF_ORDER = false; // Shelf LRUD registration & nav order debugging
 
 // === STARTUP DEBUG KILL SWITCHES ===
 // Toggle these to isolate what's choking Fire Stick startup.
@@ -2565,7 +2567,8 @@ function IndexScreen() {
   const navigationKey = useMemo(() => {
     if (!desktopShelves || desktopShelves.length === 0) return 'shelves-empty';
     // Only include shelf keys, not card counts - data changes shouldn't cause remounts
-    return `shelves-${desktopShelves.map((s) => s.key).join('-')}`;
+    const key = `shelves-${desktopShelves.map((s) => s.key).join('-')}`;
+    return key;
   }, [desktopShelves]);
 
   // Set initial focused card for TV hero display on first load
@@ -3512,8 +3515,18 @@ function VirtualizedShelf({
   const isEmpty = cards.length === 0;
   // Don't collapse while still loading — preserve shelf position for spatial nav ordering
   const shouldCollapse = Boolean(collapseIfEmpty && isEmpty && !showEmptyState);
+
   const lastItemIndexRef = React.useRef<number>(cards.length - 1);
   lastItemIndexRef.current = cards.length - 1;
+
+  // Pre-render: inject a placeholder focusable card when the shelf is empty but visible.
+  // This ensures the shelf's LRUD node has a focusable descendant from frame 1,
+  // locking in the correct vertical navigation order regardless of data arrival timing.
+  const listData = useMemo(() => {
+    if (cards.length > 0) return cards;
+    if (shouldCollapse) return cards;
+    return [{ id: PLACEHOLDER_CARD_ID, title: '', cardImage: '' } as CardData];
+  }, [cards, shouldCollapse]);
 
   // Store card lookup map in ref for O(1) access by ID without causing callback recreation
   // Using ref instead of useMemo so shelfHandlers doesn't need to depend on cardMap
@@ -3561,6 +3574,16 @@ function VirtualizedShelf({
   const renderItem = useCallback(
     ({ item, index }: { item: CardData; index: number }) => {
       const card = item;
+
+      // Placeholder card: invisible focusable node that reserves LRUD position during loading
+      if (card.id === PLACEHOLDER_CARD_ID) {
+        return (
+          <SpatialNavigationFocusableView onSelect={() => {}} onFocus={() => {}}>
+            {() => <View style={{ width: cardWidth, height: cardHeight, opacity: 0 }} />}
+          </SpatialNavigationFocusableView>
+        );
+      }
+
       // Use stable key: for series with episode codes, use just the series ID
       const rawId = String(card.id ?? index);
       const cardKey = rawId.includes(':S') ? rawId.split(':S')[0] : rawId;
@@ -3606,38 +3629,29 @@ function VirtualizedShelf({
   // Calculate row height for the virtualized list container
   const rowHeight = cardHeight + cardSpacing;
 
-  // Early return for collapsed shelves - must be after all hooks
-  // Still render the list (with empty data) so its LRUD node registers in DOM order
-  if (shouldCollapse) {
-    return (
-      <View ref={containerRef} style={[styles.shelf, styles.shelfCollapsed]} accessibilityElementsHidden>
-        <SpatialNavigationVirtualizedList
-          data={cards}
-          renderItem={renderItem}
-          itemSize={itemSize}
-          additionalItemsRendered={2}
-          orientation="horizontal"
-          scrollDuration={300}
-        />
-      </View>
-    );
-  }
+  const shouldShowEmptyState = Boolean(showEmptyState && isEmpty && !shouldCollapse);
 
-  const shouldShowEmptyState = Boolean(showEmptyState && isEmpty);
-
+  // Single JSX tree for both collapsed and non-collapsed states.
+  // This keeps SpatialNavigationVirtualizedList at the same structural position
+  // so React reuses the instance (and its LRUD node) instead of unmounting/remounting
+  // when shouldCollapse changes — which would re-register the node at the end of the
+  // parent's children array and break navigation order.
   return (
-    <View ref={containerRef} style={styles.shelf}>
-      <View style={styles.shelfTitleWrapper}>
-        <Text style={styles.shelfTitle}>{title}</Text>
+    <View
+      ref={containerRef}
+      style={shouldCollapse ? [styles.shelf, styles.shelfCollapsed] : styles.shelf}
+      accessibilityElementsHidden={shouldCollapse}>
+      <View style={shouldCollapse ? { height: 0, overflow: 'hidden' } : styles.shelfTitleWrapper}>
+        {!shouldCollapse && <Text style={styles.shelfTitle}>{title}</Text>}
       </View>
-      <View style={{ height: rowHeight }}>
+      <View style={shouldCollapse ? { height: 0, overflow: 'hidden' } : { height: rowHeight }}>
         {shouldShowEmptyState && (
           <View style={[styles.emptyCard, { position: 'absolute', zIndex: 1 }]}>
             <Text style={styles.emptyCardText}>{collapseIfEmpty ? 'Loading...' : 'Nothing to show yet'}</Text>
           </View>
         )}
         <SpatialNavigationVirtualizedList
-          data={cards}
+          data={listData}
           renderItem={renderItem}
           itemSize={itemSize}
           additionalItemsRendered={2}
@@ -3783,8 +3797,8 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
     },
     tvHeroYear: {
       ...theme.typography.body.lg,
-      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 1.4 : 1.15) * tvScale),
-      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 1.4 : 1.15) * tvScale),
+      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 1.75 : 1.15) * tvScale),
+      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 1.75 : 1.15) * tvScale),
       color: theme.colors.text.muted,
       fontStyle: 'italic',
       textShadowColor: 'rgba(0, 0, 0, 0.8)',
@@ -3793,8 +3807,8 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
     },
     tvHeroDescription: {
       ...theme.typography.body.lg,
-      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 1.6 : 1.3) * tvScale),
-      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 1.6 : 1.3) * tvScale),
+      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 2.0 : 1.3) * tvScale),
+      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 2.0 : 1.3) * tvScale),
       color: theme.colors.text.secondary,
       textShadowColor: 'rgba(0, 0, 0, 0.8)',
       textShadowOffset: { width: 0, height: 1 },
@@ -3835,14 +3849,14 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
     },
     tvHeroGenreBadge: {
       backgroundColor: 'rgba(255, 255, 255, 0.08)',
-      paddingHorizontal: Math.round(12 * tvScale),
-      paddingVertical: Math.round(6 * tvScale),
+      paddingHorizontal: Math.round((isAndroidTV ? 14 : 12) * tvScale),
+      paddingVertical: Math.round((isAndroidTV ? 7 : 6) * tvScale),
       borderRadius: Math.round(16 * tvScale),
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: 'rgba(255, 255, 255, 0.15)',
     },
     tvHeroGenreText: {
-      fontSize: Math.round(12 * tvScale),
+      fontSize: Math.round((isAndroidTV ? 14 : 12) * tvScale),
       fontWeight: '500' as const,
       color: theme.colors.text.secondary,
     },
@@ -3907,8 +3921,8 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
     },
     topDescriptionScaled: {
       ...theme.typography.body.lg,
-      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 2.73 : 1.5) * tvScale * 1.25),
-      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 2.73 : 1.5) * tvScale * 1.25),
+      fontSize: Math.round(theme.typography.body.lg.fontSize * (isAndroidTV ? 3.1 : 1.5) * tvScale * 1.25),
+      lineHeight: Math.round(theme.typography.body.lg.lineHeight * (isAndroidTV ? 3.1 : 1.5) * tvScale * 1.25),
       color: theme.colors.text.secondary,
     },
     heroContainer: {
@@ -4084,8 +4098,8 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
     // Android TV specific meta style
     cardMetaAndroidTV: {
       ...theme.typography.body.sm,
-      fontSize: Math.round(theme.typography.body.sm.fontSize * 1.25 * androidTVMetaScale),
-      lineHeight: Math.round(theme.typography.body.sm.lineHeight * 1.25 * androidTVMetaScale),
+      fontSize: Math.round(theme.typography.body.sm.fontSize * 1.25 * androidTVMetaScale * 1.2),
+      lineHeight: Math.round(theme.typography.body.sm.lineHeight * 1.25 * androidTVMetaScale * 1.2),
       color: theme.colors.text.secondary,
       textAlign: 'center',
       zIndex: 1,
@@ -4174,8 +4188,8 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
     },
     landscapeCardMetaAndroidTV: {
       ...theme.typography.body.md,
-      fontSize: Math.round(theme.typography.body.md.fontSize * 0.65),
-      lineHeight: Math.round(theme.typography.body.md.lineHeight * 0.65),
+      fontSize: Math.round(theme.typography.body.md.fontSize * 1.1),
+      lineHeight: Math.round(theme.typography.body.md.lineHeight * 1.1),
       color: theme.colors.text.secondary,
       textAlign: 'left',
       zIndex: 1,
@@ -4192,7 +4206,7 @@ function createDesktopStyles(theme: NovaTheme, screenHeight: number) {
     },
     landscapeYearText: {
       ...(isTV ? theme.typography.caption.sm : theme.typography.caption.sm),
-      fontSize: isAndroidTV ? Math.round(theme.typography.caption.sm.fontSize * 1.87 * tvScale) : isTV ? Math.round(theme.typography.caption.sm.fontSize * 1.1 * tvScale) : theme.typography.caption.sm.fontSize,
+      fontSize: isAndroidTV ? Math.round(theme.typography.caption.sm.fontSize * 2.1 * tvScale) : isTV ? Math.round(theme.typography.caption.sm.fontSize * 1.1 * tvScale) : theme.typography.caption.sm.fontSize,
       color: theme.colors.text.secondary,
       fontWeight: '300',
     },
