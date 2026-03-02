@@ -1,5 +1,7 @@
 package com.strmr.mpvplayer
 
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.util.Log
 import android.widget.FrameLayout
 import com.facebook.react.bridge.Arguments
@@ -64,6 +66,11 @@ class PlayerContainerView(private val reactContext: ThemedReactContext) :
     private var activePlayer: PlayerViewDelegate? = null
     private var destroyed = false
     private var creationPosted = false
+
+    // MediaSession — keeps FireTV screensaver from activating during playback.
+    // FireTV ignores FLAG_KEEP_SCREEN_ON and instead checks for an active
+    // MediaSession with STATE_PLAYING.
+    private var mediaSession: MediaSession? = null
 
     // Buffered props (stored until player is created)
     private var bufferedSource: ReadableMap? = null
@@ -163,9 +170,42 @@ class PlayerContainerView(private val reactContext: ThemedReactContext) :
         }
 
         activePlayer = player
+        createMediaSession()
 
         // Replay buffered props
         replayBufferedProps()
+    }
+
+    private fun createMediaSession() {
+        try {
+            val session = MediaSession(reactContext, "strmr-player")
+            session.isActive = true
+            updateMediaSessionState(!bufferedPaused)
+            mediaSession = session
+            Log.d(TAG, "MediaSession created and activated")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to create MediaSession", e)
+        }
+    }
+
+    private fun updateMediaSessionState(isPlaying: Boolean) {
+        val state = if (isPlaying) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED
+        mediaSession?.setPlaybackState(
+            PlaybackState.Builder()
+                .setState(state, PlaybackState.PLAYBACK_POSITION_UNKNOWN, if (isPlaying) 1f else 0f)
+                .build()
+        )
+    }
+
+    private fun releaseMediaSession() {
+        try {
+            mediaSession?.isActive = false
+            mediaSession?.release()
+            mediaSession = null
+            Log.d(TAG, "MediaSession released")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release MediaSession", e)
+        }
     }
 
     private fun replayBufferedProps() {
@@ -189,6 +229,7 @@ class PlayerContainerView(private val reactContext: ThemedReactContext) :
 
     fun setPaused(paused: Boolean) {
         bufferedPaused = paused
+        updateMediaSessionState(!paused)
         activePlayer?.setPaused(paused)
     }
 
@@ -249,6 +290,7 @@ class PlayerContainerView(private val reactContext: ThemedReactContext) :
     fun destroy() {
         if (destroyed) return
         destroyed = true
+        releaseMediaSession()
         activePlayer?.destroy()
         activePlayer = null
         removeAllViews()

@@ -414,9 +414,12 @@ class MpvPlayerView(
     }
 
     override fun setPaused(paused: Boolean) {
-        if (!initialized || destroyed) return
-        // Keep screen awake while playing (prevents screensaver on Android TV)
+        // Keep screen awake while playing (prevents screensaver on Android TV).
+        // Set before the init guard — keepScreenOn is a View property safe to
+        // set anytime after attach, and setPaused() is called during
+        // replayBufferedProps() before mpv is initialized.
         keepScreenOn = !paused
+        if (!initialized || destroyed) return
         mpvHandler.post {
             try {
                 MPVLib.setPropertyBoolean("pause", paused)
