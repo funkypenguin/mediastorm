@@ -746,7 +746,6 @@ const createStyles = (theme: NovaTheme, screenWidth: number, screenHeight: numbe
       width: modalWidth,
       maxWidth: modalMaxWidth,
       minWidth: Platform.isTV ? Math.round(1000 * tvS) : (isNarrow ? 280 : 300),
-      minHeight: Platform.isTV ? Math.round(500 * tvS) : (isNarrow ? 200 : 240),
       maxHeight: Math.round(screenHeight * (Platform.isTV ? 0.9 : 0.8)),
       backgroundColor: theme.colors.background.elevated,
       borderRadius: Platform.isTV ? Math.round(theme.radius.xl * tvS) : theme.radius.lg,
