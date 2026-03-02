@@ -1134,7 +1134,6 @@ export const ManualSelection = ({
                         </Animated.View>
                       </View>
                     </SpatialNavigationNode>
-                    {renderTvTracksSidePanel()}
                   </View>
                 ) : isMobile || isWebTouch ? (
                   <ScrollView
