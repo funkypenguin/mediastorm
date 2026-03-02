@@ -336,26 +336,28 @@ export const PinEntryModal: React.FC = () => {
                 </SpatialNavigationFocusableView>
               </DefaultFocus>
 
-              <View style={styles.actions}>
-                {canCancel ? (
-                  <SpatialNavigationFocusableView onSelect={handleCancel}>
+              <SpatialNavigationNode orientation="horizontal">
+                <View style={styles.actions}>
+                  {canCancel ? (
+                    <SpatialNavigationFocusableView onSelect={handleCancel}>
+                      {({ isFocused }: { isFocused: boolean }) => (
+                        <View style={[styles.button, isFocused && styles.buttonFocused]}>
+                          <Text style={[styles.buttonText, isFocused && styles.buttonTextFocused]}>Cancel</Text>
+                        </View>
+                      )}
+                    </SpatialNavigationFocusableView>
+                  ) : null}
+                  <SpatialNavigationFocusableView onSelect={handleSubmit}>
                     {({ isFocused }: { isFocused: boolean }) => (
-                      <View style={[styles.button, isFocused && styles.buttonFocused]}>
-                        <Text style={[styles.buttonText, isFocused && styles.buttonTextFocused]}>Cancel</Text>
+                      <View style={[styles.button, styles.buttonPrimary, isFocused && styles.buttonFocused, isFocused && styles.buttonPrimaryFocused]}>
+                        <Text style={[styles.buttonPrimaryText, isFocused && styles.buttonTextFocused]}>
+                          {loading ? 'Verifying...' : 'Submit'}
+                        </Text>
                       </View>
                     )}
                   </SpatialNavigationFocusableView>
-                ) : null}
-                <SpatialNavigationFocusableView onSelect={handleSubmit}>
-                  {({ isFocused }: { isFocused: boolean }) => (
-                    <View style={[styles.button, styles.buttonPrimary, isFocused && styles.buttonFocused, isFocused && styles.buttonPrimaryFocused]}>
-                      <Text style={[styles.buttonPrimaryText, isFocused && styles.buttonTextFocused]}>
-                        {loading ? 'Verifying...' : 'Submit'}
-                      </Text>
-                    </View>
-                  )}
-                </SpatialNavigationFocusableView>
-              </View>
+                </View>
+              </SpatialNavigationNode>
             </SpatialNavigationNode>
           </View>
         </BlurView>
