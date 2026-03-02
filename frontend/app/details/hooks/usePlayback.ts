@@ -361,6 +361,7 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
   const initiatePlaybackRef = useRef<
     ((result: NZBResult, signal?: AbortSignal, overrides?: { useDebugPlayer?: boolean }) => Promise<void>) | null
   >(null);
+  const playInFlightRef = useRef(false);
 
   // -------------------------------------------------------------------------
   // Pulse animation for prequeue loading state
@@ -434,6 +435,7 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
       }
       setShowBlackOverlay(false);
       setIsResolving(false);
+      playInFlightRef.current = false;
     });
     return () => {
       setOnCancel(null);
@@ -2444,6 +2446,12 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
       console.log(`[usePlayback ${instanceId}] handleWatchNow BLOCKED (fromSimilar navigation debounce)`);
       return;
     }
+    if (playInFlightRef.current) {
+      console.log(`[usePlayback ${instanceId}] handleWatchNow BLOCKED (play already in flight)`);
+      return;
+    }
+    playInFlightRef.current = true;
+    try {
     dismissTrailerAutoPlay();
     console.log(`[usePlayback ${instanceId}] handleWatchNow called - titleId: ${titleId}, title: ${title}`);
 
@@ -2512,6 +2520,9 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
     };
 
     await checkAndShowResumeModal(playAction);
+    } finally {
+      playInFlightRef.current = false;
+    }
   }, [
     activeEpisode,
     nextUpEpisode,
