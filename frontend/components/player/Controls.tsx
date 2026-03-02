@@ -752,7 +752,7 @@ const Controls: React.FC<ControlsProps> = ({
                               disabled={isSeeking || activeMenu !== null}
                             />
                           )}
-                          <Text style={styles.trackLabel}>{audioSummary}</Text>
+                          <Text style={[styles.trackLabel, styles.tvTrackLabel]} numberOfLines={1}>{audioSummary}</Text>
                         </View>
                       )}
                       {hasSubtitleSelection && subtitleSummary && !hasAudioSelection && (
@@ -780,7 +780,7 @@ const Controls: React.FC<ControlsProps> = ({
                               disabled={isSeeking || activeMenu !== null}
                             />
                           )}
-                          <Text style={styles.trackLabel}>{subtitleSummary}</Text>
+                          <Text style={[styles.trackLabel, styles.tvTrackLabel]} numberOfLines={1}>{subtitleSummary}</Text>
                         </View>
                       )}
                       {hasSubtitleSelection && subtitleSummary && hasAudioSelection && (
@@ -794,7 +794,7 @@ const Controls: React.FC<ControlsProps> = ({
                             style={[styles.controlButton, styles.trackButton]}
                             disabled={isSeeking || activeMenu !== null}
                           />
-                          <Text style={styles.trackLabel}>{subtitleSummary}</Text>
+                          <Text style={[styles.trackLabel, styles.tvTrackLabel]} numberOfLines={1}>{subtitleSummary}</Text>
                         </View>
                       )}
                     </>
@@ -1144,6 +1144,9 @@ const useControlsStyles = (theme: NovaTheme, screenWidth: number, screenHeight: 
       color: theme.colors.text.primary,
       marginLeft: theme.spacing.sm,
       flexShrink: 1,
+    },
+    tvTrackLabel: {
+      maxWidth: Math.round(200 * vh),
     },
     trackLabelDisabled: {
       color: theme.colors.text.disabled,
