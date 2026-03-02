@@ -147,6 +147,7 @@ export const ProfileSelectorModal: React.FC = () => {
     setProfileSelectorActive,
     setProfileSelectorVisible,
     pinVerifiedGeneration,
+    isPinSessionValid,
   } = useUserProfiles();
 
   // Start visible so the overlay covers the home screen immediately (no flash).
@@ -263,12 +264,18 @@ export const ProfileSelectorModal: React.FC = () => {
 
   const handleSelectProfile = useCallback(
     async (id: string) => {
-      // If same profile is selected, just dismiss without reloading
+      const user = users.find((u) => u.id === id);
+      // If same profile is selected and no PIN re-verification needed, just dismiss
       if (id === activeUserId) {
+        if (user?.hasPin && !isPinSessionValid(id)) {
+          // PIN session expired — require re-verification
+          awaitingPinRef.current = true;
+          await selectUser(id);
+          return;
+        }
         setVisible(false);
         return;
       }
-      const user = users.find((u) => u.id === id);
       if (user?.hasPin) {
         // PIN flow: selectUser sets pendingPinUserId → PinEntryModal opens.
         // Keep our overlay visible (dark bg behind the PIN modal).
@@ -281,7 +288,7 @@ export const ProfileSelectorModal: React.FC = () => {
         setVisible(false);
       }
     },
-    [selectUser, users, activeUserId],
+    [selectUser, users, activeUserId, isPinSessionValid],
   );
 
   if (!visible) {

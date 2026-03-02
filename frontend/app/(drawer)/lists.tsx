@@ -424,11 +424,11 @@ export default function ListsScreen() {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const router = useRouter();
-  const { pendingPinUserId, activeUser } = useUserProfiles();
+  const { pendingPinUserId, profileSelectorVisible, activeUser } = useUserProfiles();
   const { settings, userSettings } = useBackendSettings();
   const { isOpen: isMenuOpen, openMenu } = useMenuContext();
   const isFocused = useIsFocused();
-  const isActive = isFocused && !isMenuOpen && !pendingPinUserId;
+  const isActive = isFocused && !isMenuOpen && !pendingPinUserId && !profileSelectorVisible;
 
   const { items: continueWatchingItems } = useContinueWatching();
   const { items: watchlistItems } = useWatchlist();

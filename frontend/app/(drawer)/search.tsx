@@ -130,13 +130,13 @@ export default function SearchScreen() {
   const router = useRouter();
   const { q: voiceQuery } = useLocalSearchParams<{ q?: string }>();
   const { isOpen: isMenuOpen, openMenu } = useMenuContext();
-  const { pendingPinUserId, activeUser } = useUserProfiles();
+  const { pendingPinUserId, profileSelectorVisible, activeUser } = useUserProfiles();
 
   // Check if user is in kids curated list mode (content restricted to allowed lists)
   const isKidsCuratedMode =
     activeUser?.isKidsProfile && activeUser.kidsMode === 'content_list';
   const isFocused = useIsFocused();
-  const isActive = isFocused && !isMenuOpen && !pendingPinUserId;
+  const isActive = isFocused && !isMenuOpen && !pendingPinUserId && !profileSelectorVisible;
 
   // Reset navigation flag when screen becomes focused again
   // And clean up keyboard overlay when screen loses focus or unmounts

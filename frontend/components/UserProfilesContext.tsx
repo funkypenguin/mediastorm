@@ -6,6 +6,7 @@ import { apiService, type ApiError, type UserProfile } from '@/services/api';
 import { getClientRegistrationPayload } from '@/services/clientId';
 
 const USER_SETTINGS_LOAD_DEBOUNCE_MS = 100;
+const PIN_SESSION_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 
 const ACTIVE_USER_STORAGE_KEY = 'strmr.activeUserId';
 
@@ -48,6 +49,8 @@ interface UserProfilesContextValue {
   setProfileSelectorVisible: (visible: boolean) => void;
   // Increments on every successful PIN verification (used by profile selector to dismiss)
   pinVerifiedGeneration: number;
+  // Whether the PIN session for a given user is still valid (within expiry window)
+  isPinSessionValid: (userId: string) => boolean;
   // Increments when the active profile actually changes (used by pages to reload content)
   profileChangeGeneration: number;
 }
@@ -98,6 +101,7 @@ export const UserProfilesProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [pinVerifiedGeneration, setPinVerifiedGeneration] = useState(0);
   const [profileChangeGeneration, setProfileChangeGeneration] = useState(0);
   const activeUserIdRef = useRef<Nullable<string>>(null);
+  const pinVerifiedAtRef = useRef<number>(0);
   const usersRef = useRef<UserProfile[]>([]);
   const profileSelectorActiveRef = useRef(false);
   const profileSelectorVisibleRef = useRef(false);
@@ -152,32 +156,23 @@ export const UserProfilesProvider: React.FC<{ children: React.ReactNode }> = ({ 
         const nextId = resolveActiveUserId(preferredUserId ?? activeUserIdRef.current ?? storedId, list);
         const nextUser = list.find((u) => u.id === nextId);
 
-        // Check if the user has a PIN and we haven't already verified
-        // Skip PIN check if explicitly requested (e.g., after successful PIN entry)
-        // Also skip when the profile selector is active — it handles user selection,
-        // and selectUser() will trigger PIN entry for PIN-protected profiles.
-        if (!skipPinCheck && !profileSelectorActiveRef.current && nextUser?.hasPin && !activeUserIdRef.current) {
-          // This is initial app load with a PIN-protected user
-          console.log('[UserProfiles] Active user has PIN, prompting for verification');
-          setIsInitialPinCheck(true);
-          setPendingPinUserId(nextId);
-          // Don't set activeUserId yet - wait for PIN verification
-        } else {
-          setActiveUserId(nextId);
-          activeUserIdRef.current = nextId;
-          void persistActiveUserId(nextId);
-          // Fire-and-forget client registration — don't block setLoading(false)
-          if (nextId && nextUser) {
-            void (async () => {
-              try {
-                const payload = await getClientRegistrationPayload();
-                await apiService.registerClient({ ...payload, userId: nextId });
-                console.log('[UserProfiles] Client registered with profile:', nextUser.name);
-              } catch (err) {
-                console.warn('[UserProfiles] Failed to update client profile:', err);
-              }
-            })();
-          }
+        // Always set the active user. PIN verification is handled after mount
+        // by the deferred PIN check effect (see below), which runs after the
+        // profile selector has had a chance to mount and claim ownership.
+        setActiveUserId(nextId);
+        activeUserIdRef.current = nextId;
+        void persistActiveUserId(nextId);
+        // Fire-and-forget client registration — don't block setLoading(false)
+        if (nextId && nextUser) {
+          void (async () => {
+            try {
+              const payload = await getClientRegistrationPayload();
+              await apiService.registerClient({ ...payload, userId: nextId });
+              console.log('[UserProfiles] Client registered with profile:', nextUser.name);
+            } catch (err) {
+              console.warn('[UserProfiles] Failed to update client profile:', err);
+            }
+          })();
         }
       } catch (err) {
         const message = formatErrorMessage(err);
@@ -199,6 +194,32 @@ export const UserProfilesProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
     void refresh();
   }, [isReady, backendUrl, refresh]);
+
+  // Deferred initial PIN check — runs after ProfileSelectorModal has mounted
+  // and set profileSelectorActiveRef. React runs child effects before parent
+  // effects in the same commit, so by the time this fires the profile selector
+  // has already decided whether it's active.
+  const initialPinCheckedRef = useRef(false);
+  useEffect(() => {
+    if (loading || initialPinCheckedRef.current) {
+      return;
+    }
+    initialPinCheckedRef.current = true;
+
+    // If the profile selector is active it will handle PIN via selectUser()
+    if (profileSelectorActiveRef.current) {
+      console.log('[UserProfiles] Profile selector active — deferring PIN check to it');
+      return;
+    }
+
+    // Profile selector isn't active — check if the active user needs PIN
+    const user = usersRef.current.find((u) => u.id === activeUserIdRef.current);
+    if (user?.hasPin && pinVerifiedAtRef.current === 0) {
+      console.log('[UserProfiles] Active user has PIN, prompting for verification');
+      setIsInitialPinCheck(true);
+      setPendingPinUserId(activeUserIdRef.current);
+    }
+  }, [loading]);
 
   // Load user settings when activeUserId changes
   useEffect(() => {
@@ -268,6 +289,7 @@ export const UserProfilesProvider: React.FC<{ children: React.ReactNode }> = ({ 
         throw new Error('Invalid PIN');
       }
       const changed = activeUserIdRef.current !== trimmed;
+      pinVerifiedAtRef.current = Date.now();
       setPendingPinUserId(null);
       setIsInitialPinCheck(false);
       setActiveUserId(trimmed);
@@ -291,6 +313,10 @@ export const UserProfilesProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const verifyPin = useCallback(async (id: string, pin: string): Promise<boolean> => {
     return apiService.verifyUserPin(id, pin);
+  }, []);
+
+  const isPinSessionValid = useCallback((userId: string): boolean => {
+    return activeUserIdRef.current === userId && pinVerifiedAtRef.current > 0 && Date.now() - pinVerifiedAtRef.current < PIN_SESSION_EXPIRY_MS;
   }, []);
 
   const setProfileSelectorActive = useCallback((active: boolean) => {
@@ -439,6 +465,7 @@ export const UserProfilesProvider: React.FC<{ children: React.ReactNode }> = ({ 
       profileSelectorVisible,
       setProfileSelectorVisible,
       pinVerifiedGeneration,
+      isPinSessionValid,
       profileChangeGeneration,
     };
   }, [
@@ -469,6 +496,7 @@ export const UserProfilesProvider: React.FC<{ children: React.ReactNode }> = ({ 
     profileSelectorVisible,
     setProfileSelectorVisible,
     pinVerifiedGeneration,
+    isPinSessionValid,
     profileChangeGeneration,
     findUser,
   ]);

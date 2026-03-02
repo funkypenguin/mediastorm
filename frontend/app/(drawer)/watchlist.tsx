@@ -132,11 +132,11 @@ export default function WatchlistScreen() {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const router = useRouter();
-  const { activeUserId, pendingPinUserId } = useUserProfiles();
+  const { activeUserId, pendingPinUserId, profileSelectorVisible } = useUserProfiles();
   const { settings, userSettings } = useBackendSettings();
   const { isOpen: isMenuOpen, openMenu } = useMenuContext();
   const isFocused = useIsFocused();
-  const isActive = isFocused && !isMenuOpen && !pendingPinUserId;
+  const isActive = isFocused && !isMenuOpen && !pendingPinUserId && !profileSelectorVisible;
 
   // Ref for MediaGrid to control scrolling from header
   const mediaGridRef = useRef<MediaGridHandle>(null);

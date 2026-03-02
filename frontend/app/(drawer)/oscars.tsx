@@ -1,6 +1,7 @@
 import { FixedSafeAreaView } from '@/components/FixedSafeAreaView';
 import { ListCard } from '@/components/ListCard';
 import { useMenuContext } from '@/components/MenuContext';
+import { useUserProfiles } from '@/components/UserProfilesContext';
 import { OSCARS_2026_CATEGORIES } from '@/constants/oscars2026';
 import {
   DefaultFocus,
@@ -28,8 +29,9 @@ export default function OscarsScreen() {
   const styles = useMemo(() => createStyles(theme), [theme]);
   const router = useRouter();
   const { isOpen: isMenuOpen } = useMenuContext();
+  const { pendingPinUserId, profileSelectorVisible } = useUserProfiles();
   const isFocused = useIsFocused();
-  const isActive = isFocused && !isMenuOpen;
+  const isActive = isFocused && !isMenuOpen && !pendingPinUserId && !profileSelectorVisible;
   const { width: screenWidth } = useTVDimensions();
 
   const handleCategoryPress = useCallback(

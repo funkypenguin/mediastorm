@@ -55,7 +55,7 @@ export default function ProfilesScreen() {
   const styles = useMemo(() => createStyles(theme, screenWidth, screenHeight), [theme, screenWidth, screenHeight]);
   const _isFocused = useIsFocused();
   const { isOpen: isMenuOpen, openMenu } = useMenuContext();
-  const { users, loading, error, activeUserId, selectUser, updateColor, getIconUrl, pendingPinUserId: _pendingPinUserId } =
+  const { users, loading, error, activeUserId, selectUser, updateColor, getIconUrl, pendingPinUserId, profileSelectorVisible } =
     useUserProfiles();
   const { showToast } = useToast();
 
@@ -278,7 +278,7 @@ export default function ProfilesScreen() {
   // TV Layout - Spatial navigation
   if (Platform.isTV) {
     // Spatial navigation is active when menu and modal are closed
-    const isActive = !isMenuOpen && !isProfileModalVisible;
+    const isActive = !isMenuOpen && !isProfileModalVisible && !pendingPinUserId && !profileSelectorVisible;
 
     // Main page content wrapped in spatial navigation
     const pageContent = (

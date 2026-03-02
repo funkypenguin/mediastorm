@@ -580,7 +580,7 @@ function LiveScreen() {
   const router = useRouter();
   const { isOpen: isMenuOpen, openMenu } = useMenuContext();
   const isFocused = useIsFocused();
-  const { pendingPinUserId, activeUserId } = useUserProfiles();
+  const { pendingPinUserId, profileSelectorVisible, activeUserId } = useUserProfiles();
   const { selectedCategories, toggleCategory, setSelectedCategories } = useLiveCategories();
   const { isFavorite, toggleFavorite, favorites } = useLiveFavorites();
   const { channels, loading, error, refresh, hasPlaylistUrl, availableCategories } = useLiveChannels(
@@ -678,6 +678,7 @@ function LiveScreen() {
     !isActionModalVisible &&
     !isFilterActive &&
     !pendingPinUserId &&
+    !profileSelectorVisible &&
     !isSelectionConfirmVisible;
 
   // Guard against duplicate "select" events on tvOS

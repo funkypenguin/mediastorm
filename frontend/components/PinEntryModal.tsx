@@ -104,9 +104,15 @@ const createStyles = (theme: NovaTheme) => {
       gap: responsiveSize(24, 16),
     },
     button: {
+      paddingVertical: responsiveSize(18, 12),
+      paddingHorizontal: responsiveSize(40, 24),
+      borderRadius: responsiveSize(12, 8),
       backgroundColor: theme.colors.overlay.button,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border.subtle,
+      minWidth: responsiveSize(180, 100),
+      alignItems: 'center' as const,
+      justifyContent: 'center' as const,
     },
     buttonPrimary: {
       backgroundColor: theme.colors.accent.primary,
@@ -120,9 +126,13 @@ const createStyles = (theme: NovaTheme) => {
       borderColor: theme.colors.text.inverse,
     },
     buttonText: {
+      fontSize: responsiveSize(26, 16),
+      fontWeight: '600' as const,
       color: theme.colors.text.primary,
     },
     buttonPrimaryText: {
+      fontSize: responsiveSize(26, 16),
+      fontWeight: '600' as const,
       color: theme.colors.text.inverse,
     },
     buttonTextFocused: {

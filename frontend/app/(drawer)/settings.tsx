@@ -783,9 +783,9 @@ function SettingsScreen() {
     options?: TextInputOptions;
   }>({ visible: false, label: '', value: '', fieldKey: '' });
   const [logUrlModalVisible, setLogUrlModalVisible] = useState(false);
-  const { pendingPinUserId } = useUserProfiles();
+  const { pendingPinUserId, profileSelectorVisible } = useUserProfiles();
   const { visibilityMap, setTabVisible } = useNavVisibility();
-  const isActive = isFocused && !isMenuOpen && !textInputModal.visible && !pendingPinUserId && !logUrlModalVisible;
+  const isActive = isFocused && !isMenuOpen && !textInputModal.visible && !pendingPinUserId && !profileSelectorVisible && !logUrlModalVisible;
   const [activeTab, setActiveTab] = useState<SettingsTab>('connection');
   const [backendVersion, setBackendVersion] = useState<string | null>(null);
   const [clientId, setClientId] = useState<string | null>(null);
