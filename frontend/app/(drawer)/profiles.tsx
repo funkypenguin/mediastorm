@@ -1043,9 +1043,9 @@ const createStyles = (theme: NovaTheme, screenWidth = 1920, screenHeight = 1080)
       color: 'white',
     },
     modalButton: {
-      paddingHorizontal: theme.spacing.lg * (isTV ? 1.375 : 1),
-      paddingVertical: theme.spacing.md * (isTV ? 1.375 : 1),
-      borderRadius: theme.radius.md * (isTV ? 1.375 : 1),
+      paddingHorizontal: isTVPlatform ? Math.round(theme.spacing.lg * 1.375 * vh) : theme.spacing.lg,
+      paddingVertical: isTVPlatform ? Math.round(theme.spacing.md * 1.375 * vh) : theme.spacing.md,
+      borderRadius: isTVPlatform ? Math.round(theme.radius.md * 1.375 * vh) : theme.radius.md,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border.subtle,
       backgroundColor: theme.colors.overlay.button,
@@ -1060,14 +1060,14 @@ const createStyles = (theme: NovaTheme, screenWidth = 1920, screenHeight = 1080)
     modalButtonText: {
       ...theme.typography.label.md,
       color: theme.colors.text.primary,
-      fontSize: theme.typography.label.md.fontSize * (isTV ? 1.375 : 1),
-      lineHeight: theme.typography.label.md.lineHeight * (isTV ? 1.375 : 1),
+      fontSize: isTVPlatform ? Math.round(theme.typography.label.md.fontSize * 1.375 * vh) : theme.typography.label.md.fontSize,
+      lineHeight: isTVPlatform ? Math.round(theme.typography.label.md.lineHeight * 1.375 * vh) : theme.typography.label.md.lineHeight,
     },
     modalButtonTextFocused: {
       ...theme.typography.label.md,
       color: theme.colors.text.inverse,
-      fontSize: theme.typography.label.md.fontSize * (isTV ? 1.375 : 1),
-      lineHeight: theme.typography.label.md.lineHeight * (isTV ? 1.375 : 1),
+      fontSize: isTVPlatform ? Math.round(theme.typography.label.md.fontSize * 1.375 * vh) : theme.typography.label.md.fontSize,
+      lineHeight: isTVPlatform ? Math.round(theme.typography.label.md.lineHeight * 1.375 * vh) : theme.typography.label.md.lineHeight,
     },
     modalButtonsContainer: {
       gap: theme.spacing.md,

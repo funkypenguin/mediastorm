@@ -10,7 +10,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTVDimensions } from '@/hooks/useTVDimensions';
-import { isTablet } from '@/theme/tokens/tvScale';
+import { isTablet, TV_REFERENCE_HEIGHT } from '@/theme/tokens/tvScale';
 import type { EPGProgram } from '@/services/api';
 
 interface ControlsProps {
@@ -141,7 +141,7 @@ const Controls: React.FC<ControlsProps> = ({
 }) => {
   const theme = useTheme();
   const { width, height } = useTVDimensions();
-  const styles = useMemo(() => useControlsStyles(theme, width), [theme, width]);
+  const styles = useMemo(() => useControlsStyles(theme, width, height), [theme, width, height]);
   const showVolume = Platform.OS === 'web';
   const isTvPlatform = Platform.isTV;
   const isMobile = Platform.OS !== 'web' && !isTvPlatform;
@@ -755,20 +755,6 @@ const Controls: React.FC<ControlsProps> = ({
                           <Text style={styles.trackLabel}>{audioSummary}</Text>
                         </View>
                       )}
-                      {hasSpeedSelection && (
-                        <View style={styles.trackButtonGroup} pointerEvents="box-none">
-                          <FocusablePressable
-                            ref={speedButtonRef}
-                            icon="speedometer-outline"
-                            focusKey="speed-button"
-                            onSelect={handleOpenSpeedMenu}
-                            onFocus={handleSpeedFocus}
-                            style={[styles.controlButton, styles.trackButton]}
-                            disabled={isSeeking || activeMenu !== null}
-                          />
-                          <Text style={styles.trackLabel}>{speedSummary}</Text>
-                        </View>
-                      )}
                       {hasSubtitleSelection && subtitleSummary && !hasAudioSelection && (
                         <View style={styles.trackButtonGroup} pointerEvents="box-none">
                           {isLiveTV ? (
@@ -895,6 +881,21 @@ const Controls: React.FC<ControlsProps> = ({
                       disabled={isSeeking || activeMenu !== null}
                     />
                   )}
+                  {/* Speed button for TV platforms - after info button */}
+                  {isTvPlatform && hasSpeedSelection && (
+                    <View style={styles.tvSpeedGroup} pointerEvents="box-none">
+                      <FocusablePressable
+                        ref={speedButtonRef}
+                        icon="speedometer-outline"
+                        focusKey="speed-button"
+                        onSelect={handleOpenSpeedMenu}
+                        onFocus={handleSpeedFocus}
+                        style={[styles.controlButton, styles.trackButton]}
+                        disabled={isSeeking || activeMenu !== null}
+                      />
+                      <Text style={styles.trackLabel}>{speedSummary}</Text>
+                    </View>
+                  )}
                 </View>
               </SpatialNavigationNode>
             )}
@@ -905,14 +906,14 @@ const Controls: React.FC<ControlsProps> = ({
   );
 };
 
-const useControlsStyles = (theme: NovaTheme, screenWidth: number) => {
+const useControlsStyles = (theme: NovaTheme, screenWidth: number, screenHeight: number) => {
   // Calculate dynamic gap for center controls based on screen width
   // Button widths: play (80) + 2x skip (60) + 2x episode (50) = 300px max
   // We want comfortable spacing that scales down on narrow screens
   const centerControlsGap = Math.max(theme.spacing.sm, Math.min(theme.spacing.xl, (screenWidth - 300) / 6));
-  const isAndroidTV = Platform.isTV && Platform.OS === 'android';
-  // Android TV control buttons are 50% smaller (40% + 10%)
-  const controlButtonMinWidth = isAndroidTV ? 32 : 60;
+  // Viewport-height ratio: 1.0 on tvOS (1080p), ~0.5 on Android TV
+  const vh = (screenHeight > 0 ? screenHeight : 1080) / TV_REFERENCE_HEIGHT;
+  const controlButtonMinWidth = Math.round(60 * vh);
 
   return StyleSheet.create({
     centerControls: {
@@ -1090,6 +1091,11 @@ const useControlsStyles = (theme: NovaTheme, screenWidth: number) => {
       alignItems: 'center',
       justifyContent: 'center',
     },
+    tvSpeedGroup: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginLeft: theme.spacing.md,
+    },
     speedBadge: {
       position: 'absolute' as const,
       bottom: -2,
@@ -1160,7 +1166,7 @@ const useControlsStyles = (theme: NovaTheme, screenWidth: number) => {
     tvSkipLabel: {
       ...theme.typography.body.sm,
       color: theme.colors.text.secondary,
-      marginLeft: isAndroidTV ? -theme.spacing.xs : -theme.spacing.sm,
+      marginLeft: -Math.round(theme.spacing.sm * vh),
       marginRight: theme.spacing.md,
     },
     // Mobile subtitle offset styles
@@ -1214,13 +1220,13 @@ const useControlsStyles = (theme: NovaTheme, screenWidth: number) => {
     subtitleOffsetTvGroup: {
       flexDirection: 'row',
       alignItems: 'center',
-      marginRight: isAndroidTV ? theme.spacing.xl * 0.7 : theme.spacing.xl,
-      marginBottom: isAndroidTV ? theme.spacing.xs * 0.7 : theme.spacing.xs,
+      marginRight: Math.round(theme.spacing.xl * vh),
+      marginBottom: Math.round(theme.spacing.xs * vh),
     },
     subtitleOffsetTvDisplay: {
       alignItems: 'center',
-      marginHorizontal: isAndroidTV ? theme.spacing.sm * 0.7 : theme.spacing.sm,
-      minWidth: isAndroidTV ? 42 : 60,
+      marginHorizontal: Math.round(theme.spacing.sm * vh),
+      minWidth: Math.round(60 * vh),
     },
     subtitleOffsetTvLabel: {
       ...theme.typography.body.sm,

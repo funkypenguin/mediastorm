@@ -46,6 +46,8 @@ interface CustomPressableProps extends PressableProps {
   badge?: string;
   /** Style applied to the outer wrapper View (use to override alignSelf for centering) */
   wrapperStyle?: StyleProp<ViewStyle>;
+  /** Optional overlay rendered inside the wrapper (position: relative, overflow: visible) */
+  overlay?: React.ReactNode;
   /** Native tag to focus when pressing Right (Android TV focus trapping) */
   nextFocusRight?: number;
   /** Native tag to focus when pressing Left (Android TV focus trapping) */
@@ -79,6 +81,7 @@ const FocusablePressable = forwardRef<View, CustomPressableProps>(
       showReadyPip = false,
       badge,
       wrapperStyle,
+      overlay,
       nextFocusRight,
       nextFocusLeft,
       nextFocusUp,
@@ -205,6 +208,7 @@ const FocusablePressable = forwardRef<View, CustomPressableProps>(
             <Ionicons name="time" size={10} color="#000000" />
           </View>
         )}
+        {overlay}
       </View>
     );
   },
