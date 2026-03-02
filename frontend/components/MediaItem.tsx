@@ -95,7 +95,7 @@ const getSeriesStatusIcon = (status?: string): string | null => {
 // Get watch state icon
 // Visual design: ● (full circle) = fully watched, ◐ (half circle) = partial
 // Note: Unwatched items (empty circle) are disabled - only show watched/partial states
-const getWatchStateIcon = (
+export const getWatchStateIcon = (
   isWatched?: boolean,
   watchState?: 'none' | 'partial' | 'complete',
   mediaType?: string,

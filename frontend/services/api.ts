@@ -1394,8 +1394,10 @@ class ApiService {
   async getCuratedList(
     items: { title: string; year: number; imdbId: string; mediaType: string }[],
     label?: string,
+    userId?: string,
   ): Promise<{ items: TrendingItem[] }> {
-    return this.request<{ items: TrendingItem[] }>('/lists/curated', {
+    const params = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+    return this.request<{ items: TrendingItem[] }>(`/lists/curated${params}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items, label }),

@@ -5,6 +5,7 @@ import MediaGrid, { type MediaGridHandle } from '@/components/MediaGrid';
 import { useMenuContext } from '@/components/MenuContext';
 import { useUserProfiles } from '@/components/UserProfilesContext';
 import { useWatchlistActions, useWatchlistData } from '@/components/WatchlistContext';
+import { useWatchStatusData } from '@/components/WatchStatusContext';
 import { CategoryFilterModal } from '@/components/CategoryFilterModal';
 import { OSCARS_2026_CATEGORIES } from '@/constants/oscars2026';
 import { SEASONAL_LISTS } from '@/constants/seasonal';
@@ -101,14 +102,30 @@ const SpatialFilterButton = ({
   );
 };
 
-// Apply pre-computed watch state from backend to derive isWatched flag.
-// The backend now computes watchState/unwatchedCount server-side, so we only
-// need to read the pre-computed field and set the legacy isWatched boolean.
-function applyWatchState<T>(titles: T[]): T[] {
-  return titles.map((t) => ({
-    ...t,
-    isWatched: (t as unknown as { watchState?: string }).watchState === 'complete',
-  }));
+// Apply watch state using live WatchStatusContext data as source of truth.
+// The backend pre-computes watchState at fetch time, but the user may toggle
+// watched status on the details page without re-fetching the list. The optional
+// liveIsWatched callback overrides stale backend data when available.
+function applyWatchState<T extends { id?: string; mediaType?: string }>(
+  titles: T[],
+  liveIsWatched?: (mediaType: string, id: string) => boolean,
+): T[] {
+  return titles.map((t) => {
+    let watchState = (t as unknown as { watchState?: string }).watchState;
+    if (liveIsWatched && t.mediaType && t.id) {
+      const liveWatched = liveIsWatched(t.mediaType, t.id);
+      if (liveWatched && watchState !== 'complete') {
+        watchState = 'complete';
+      } else if (!liveWatched && watchState === 'complete') {
+        watchState = 'none';
+      }
+    }
+    return {
+      ...t,
+      watchState,
+      isWatched: watchState === 'complete',
+    };
+  });
 }
 
 export default function WatchlistScreen() {
@@ -165,6 +182,9 @@ export default function WatchlistScreen() {
   // Continue watching data
   const { items: continueWatchingItems, loading: continueWatchingLoading } = useContinueWatchingData();
   const { refresh: refreshContinueWatching } = useContinueWatchingActions();
+
+  // Live watch status (source of truth — updates immediately when user toggles on details page)
+  const { isWatched: liveIsWatched } = useWatchStatusData();
 
   // The startup bundle caps watchlist/continue-watching to 20 items.
   // When this page needs the full list, silently refresh the context.
@@ -421,7 +441,7 @@ export default function WatchlistScreen() {
           const categoryId = shelfId.replace('oscar-', '');
           const category = OSCARS_2026_CATEGORIES.find((c) => c.id === categoryId);
           if (category) {
-            const response = await apiService.getCuratedList(category.nominees, category.name);
+            const response = await apiService.getCuratedList(category.nominees, category.name, activeUserId ?? undefined);
             // Map person/country names onto posters as subtitles
             const nomineeByImdb = new Map(
               category.nominees
@@ -778,8 +798,8 @@ export default function WatchlistScreen() {
       return title;
     });
     // Always apply pre-computed watch status on watchlist page (needed for watch status filter + badge)
-    return applyWatchState(titlesWithReleases);
-  }, [items, watchlistYears, watchlistMetadata, movieReleases]);
+    return applyWatchState(titlesWithReleases, liveIsWatched);
+  }, [items, watchlistYears, watchlistMetadata, movieReleases, liveIsWatched]);
 
   // Map continue watching items to titles
   const continueWatchingTitles = useMemo((): WatchlistTitle[] => {
@@ -809,9 +829,9 @@ export default function WatchlistScreen() {
     });
     // Apply pre-computed watch status if badge is enabled
     return shouldEnrichWatchStatus
-      ? applyWatchState(baseTitles)
+      ? applyWatchState(baseTitles, liveIsWatched)
       : baseTitles;
-  }, [continueWatchingItems, movieReleases, shouldEnrichWatchStatus]);
+  }, [continueWatchingItems, movieReleases, shouldEnrichWatchStatus, liveIsWatched]);
 
   // Map explore items (trending movies, trending TV, custom lists) to titles
   const exploreTitles = useMemo((): WatchlistTitle[] => {
@@ -831,9 +851,9 @@ export default function WatchlistScreen() {
     });
     // Apply pre-computed watch status if badge is enabled
     return shouldEnrichWatchStatus
-      ? applyWatchState(baseTitles)
+      ? applyWatchState(baseTitles, liveIsWatched)
       : baseTitles;
-  }, [needsProgressiveLoading, exploreItems, isTrendingMovies, isTrendingTV, movieReleases, shouldEnrichWatchStatus]);
+  }, [needsProgressiveLoading, exploreItems, isTrendingMovies, isTrendingTV, movieReleases, shouldEnrichWatchStatus, liveIsWatched]);
 
   // Map collection items to titles
   const collectionTitles = useMemo((): WatchlistTitle[] => {
@@ -850,9 +870,9 @@ export default function WatchlistScreen() {
     });
     // Apply pre-computed watch status if badge is enabled
     return shouldEnrichWatchStatus
-      ? applyWatchState(baseTitles)
+      ? applyWatchState(baseTitles, liveIsWatched)
       : baseTitles;
-  }, [isCollectionMode, collectionItems, movieReleases, shouldEnrichWatchStatus]);
+  }, [isCollectionMode, collectionItems, movieReleases, shouldEnrichWatchStatus, liveIsWatched]);
 
   // Map person filmography to titles, sorted based on user preference
   const personTitles = useMemo((): WatchlistTitle[] => {
@@ -882,9 +902,9 @@ export default function WatchlistScreen() {
     });
     // Apply pre-computed watch status if badge is enabled
     return shouldEnrichWatchStatus
-      ? applyWatchState(baseTitles)
+      ? applyWatchState(baseTitles, liveIsWatched)
       : baseTitles;
-  }, [isPersonMode, personDetails, movieReleases, filmographySort, shouldEnrichWatchStatus]);
+  }, [isPersonMode, personDetails, movieReleases, filmographySort, shouldEnrichWatchStatus, liveIsWatched]);
 
   // Map similar/recommendation items to titles
   const similarTitles = useMemo((): WatchlistTitle[] => {
@@ -900,9 +920,9 @@ export default function WatchlistScreen() {
       };
     });
     return shouldEnrichWatchStatus
-      ? applyWatchState(baseTitles)
+      ? applyWatchState(baseTitles, liveIsWatched)
       : baseTitles;
-  }, [isSimilarShelf, similarItems, movieReleases, shouldEnrichWatchStatus]);
+  }, [isSimilarShelf, similarItems, movieReleases, shouldEnrichWatchStatus, liveIsWatched]);
 
   // Select the appropriate titles based on mode
   const allTitles = useMemo((): WatchlistTitle[] => {

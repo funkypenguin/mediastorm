@@ -20,7 +20,7 @@ import type { ColumnOverride } from '../hooks/useResponsiveColumns';
 import { useTheme } from '../theme';
 import type { NovaTheme } from '../theme';
 import { isAndroidTablet, isAndroidTV, isTablet } from '../theme/tokens/tvScale';
-import MediaItem, { getMovieReleaseIcon } from './MediaItem';
+import MediaItem, { getMovieReleaseIcon, getWatchStateIcon } from './MediaItem';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
@@ -171,11 +171,14 @@ const createStyles = (theme: NovaTheme, screenWidth?: number, parentPadding: num
       fontSize: 10,
       letterSpacing: 0.5,
     },
-    // Release status badge (top-left)
+    // Top-left badge container (watch state + release status)
     releaseStatusBadge: {
       position: 'absolute',
       top: theme.spacing.xs,
       left: theme.spacing.xs,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
       backgroundColor: 'rgba(0, 0, 0, 0.75)',
       paddingHorizontal: theme.spacing.sm,
       paddingVertical: theme.spacing.xs,
@@ -529,17 +532,26 @@ const MediaGrid = forwardRef<MediaGridHandle, MediaGridProps>(function MediaGrid
                       <Text style={styles.placeholderImageText}>No Image</Text>
                     </View>
                   )}
-                  {/* Release status badge (top-left) for movies - check badgeVisibility */}
-                  {item.mediaType === 'movie' &&
-                    badgeVisibility?.includes('releaseStatus') &&
-                    (() => {
-                      const releaseIcon = getMovieReleaseIcon(item);
-                      return releaseIcon ? (
-                        <View style={styles.releaseStatusBadge}>
+                  {/* Top-left badges (watch state + release status) */}
+                  {item.mediaType !== 'explore' && (() => {
+                    const wsData = badgeVisibility?.includes('watchState')
+                      ? getWatchStateIcon((item as any).isWatched, item.watchState, item.mediaType, watchStateIconStyle)
+                      : null;
+                    const releaseIcon = item.mediaType === 'movie' && badgeVisibility?.includes('releaseStatus')
+                      ? getMovieReleaseIcon(item)
+                      : null;
+                    if (!wsData && !releaseIcon) return null;
+                    return (
+                      <View style={styles.releaseStatusBadge}>
+                        {wsData && (
+                          <MaterialCommunityIcons name={wsData.icon} size={14} color={wsData.color} />
+                        )}
+                        {releaseIcon && (
                           <MaterialCommunityIcons name={releaseIcon.name} size={14} color={watchStateIconStyle === 'white' ? '#ffffff' : releaseIcon.color} />
-                        </View>
-                      ) : null;
-                    })()}
+                        )}
+                      </View>
+                    );
+                  })()}
                   {/* Media type badge (top-right) */}
                   {item.mediaType && item.mediaType !== 'explore' && (
                     <View style={styles.badge}>
