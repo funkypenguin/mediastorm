@@ -41,6 +41,7 @@ const RNVideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       onVideoSize,
       onPictureInPictureStatusChanged,
       onPlaybackStateChanged,
+      rate = 1.0,
     },
     ref,
   ) => {
@@ -426,6 +427,7 @@ const RNVideoPlayer = React.forwardRef<VideoPlayerHandle, VideoPlayerProps>(
             source={source}
             style={styles.video}
             paused={paused}
+            rate={rate}
             volume={resolvedVolume}
             controls={controls}
             resizeMode="contain"

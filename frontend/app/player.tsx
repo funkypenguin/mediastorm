@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearMemoryCache as clearImageMemoryCache, clearDiskCache as clearImageDiskCache } from '@/components/Image';
 import { FixedSafeAreaView } from '@/components/FixedSafeAreaView';
 import LoadingIndicator from '@/components/LoadingIndicator';
@@ -1290,6 +1291,38 @@ export default function PlayerScreen() {
 
   // Setup playback progress tracking
   const { activeUserId, activeUser } = useUserProfiles();
+
+  // Playback speed state (persisted locally via AsyncStorage)
+  const PLAYBACK_SPEED_KEY = '@playback_speed';
+  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
+  const SPEED_OPTIONS: TrackOption[] = useMemo(() => [
+    { id: '0.5', label: '0.5x' },
+    { id: '0.75', label: '0.75x' },
+    { id: '1', label: '1.0x' },
+    { id: '1.25', label: '1.25x' },
+    { id: '1.5', label: '1.5x' },
+    { id: '1.75', label: '1.75x' },
+    { id: '2', label: '2.0x' },
+  ], []);
+
+  // Load persisted speed on mount
+  useEffect(() => {
+    AsyncStorage.getItem(PLAYBACK_SPEED_KEY).then((stored) => {
+      if (stored) {
+        const parsed = parseFloat(stored);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          setPlaybackSpeed(parsed);
+        }
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handlePlaybackSpeedChange = useCallback((speed: number) => {
+    setPlaybackSpeed(speed);
+    AsyncStorage.setItem(PLAYBACK_SPEED_KEY, speed.toString()).catch((err) => {
+      console.warn('Failed to save playback speed', err);
+    });
+  }, []);
 
   // Fetch per-content language preference (if exists) to override user settings
   useEffect(() => {
@@ -6036,6 +6069,7 @@ export default function PlayerScreen() {
               externalSubtitleUrl={useNativePlayer && selectedSubtitleTrackId === 'external' ? externalSubtitleUrl ?? undefined : undefined}
               isHDR={isAndroidTvHDR || undefined}
               isDV={isAndroidDV || undefined}
+              rate={playbackSpeed}
             />
           </View>
 
@@ -6274,6 +6308,8 @@ export default function PlayerScreen() {
                             onEnterPip={handleEnterPip}
                             currentProgram={currentProgram}
                             nextProgram={nextProgram}
+                            playbackSpeed={playbackSpeed}
+                            onPlaybackSpeedChange={handlePlaybackSpeedChange}
                           />
                         </View>
                       </View>
@@ -6324,11 +6360,26 @@ export default function PlayerScreen() {
                       onSearchSubtitles={activeMenu === 'subtitles' && !isLiveTV ? handleOpenSubtitleSearch : undefined}
                     />
                   )}
+                  {activeMenu === 'speed' && (
+                    <TrackSelectionModal
+                      visible={true}
+                      title="Playback Speed"
+                      subtitle={`Current speed: ${playbackSpeed}x`}
+                      options={SPEED_OPTIONS}
+                      selectedId={playbackSpeed.toString()}
+                      onSelect={(id) => {
+                        handlePlaybackSpeedChange(parseFloat(id));
+                        closeActiveModalRef.current?.();
+                      }}
+                      onClose={() => closeActiveModalRef.current?.()}
+                      focusKeyPrefix="speed"
+                    />
+                  )}
                   {activeMenu === 'info' && fullStreamInfo && (
-                    <StreamInfoModal 
-                      visible={true} 
-                      info={fullStreamInfo} 
-                      onClose={() => closeActiveModalRef.current?.()} 
+                    <StreamInfoModal
+                      visible={true}
+                      info={fullStreamInfo}
+                      onClose={() => closeActiveModalRef.current?.()}
                     />
                   )}
                 </TVControlsModal>
@@ -6445,6 +6496,8 @@ export default function PlayerScreen() {
                         flashSkipButton={flashSkipButton}
                         currentProgram={currentProgram}
                         nextProgram={nextProgram}
+                        playbackSpeed={playbackSpeed}
+                        onPlaybackSpeedChange={handlePlaybackSpeedChange}
                       />
                     </View>
                   </View>
@@ -6491,14 +6544,33 @@ export default function PlayerScreen() {
                   onSearchSubtitles={activeMenu === 'subtitles' && !isLiveTV ? handleOpenSubtitleSearch : undefined}
                 />
               )}
-              {activeMenu === 'info' && fullStreamInfo && (
-                <StreamInfoModal 
-                  visible={true} 
-                  info={fullStreamInfo} 
+              {activeMenu === 'speed' && (
+                <TrackSelectionModal
+                  visible={true}
+                  title="Playback Speed"
+                  subtitle={`Current speed: ${playbackSpeed}x`}
+                  options={SPEED_OPTIONS}
+                  selectedId={playbackSpeed.toString()}
+                  onSelect={(id) => {
+                    handlePlaybackSpeedChange(parseFloat(id));
+                    setActiveMenu(null);
+                    handleModalStateChange(false);
+                  }}
                   onClose={() => {
                     setActiveMenu(null);
                     handleModalStateChange(false);
-                  }} 
+                  }}
+                  focusKeyPrefix="speed"
+                />
+              )}
+              {activeMenu === 'info' && fullStreamInfo && (
+                <StreamInfoModal
+                  visible={true}
+                  info={fullStreamInfo}
+                  onClose={() => {
+                    setActiveMenu(null);
+                    handleModalStateChange(false);
+                  }}
                 />
               )}
             </>

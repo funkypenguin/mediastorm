@@ -74,6 +74,10 @@ interface ControlsProps {
   closeModalRef?: React.MutableRefObject<(() => void) | null>;
   activeMenu?: ActiveMenu;
   onActiveMenuChange?: (menu: ActiveMenu) => void;
+  /** Current playback speed (1.0 = normal) */
+  playbackSpeed?: number;
+  /** Callback when user selects a new playback speed */
+  onPlaybackSpeedChange?: (speed: number) => void;
 }
 
 export type TrackOption = {
@@ -82,7 +86,7 @@ export type TrackOption = {
   description?: string;
 };
 
-export type ActiveMenu = 'audio' | 'subtitles' | 'info' | null;
+export type ActiveMenu = 'audio' | 'subtitles' | 'info' | 'speed' | null;
 
 const Controls: React.FC<ControlsProps> = ({
   paused,
@@ -132,6 +136,8 @@ const Controls: React.FC<ControlsProps> = ({
   closeModalRef,
   activeMenu = null,
   onActiveMenuChange,
+  playbackSpeed = 1.0,
+  onPlaybackSpeedChange,
 }) => {
   const theme = useTheme();
   const { width, height } = useTVDimensions();
@@ -147,6 +153,7 @@ const Controls: React.FC<ControlsProps> = ({
   const audioButtonRef = useRef<View>(null);
   const subtitleButtonRef = useRef<View>(null);
   const infoButtonRef = useRef<View>(null);
+  const speedButtonRef = useRef<View>(null);
   const lastFocusedViewRef = useRef<View | null>(null);
 
   // Flash animation for skip buttons (triggered by double-tap on mobile)
@@ -208,6 +215,9 @@ const Controls: React.FC<ControlsProps> = ({
     return `${sign}${subtitleOffset.toFixed(2)}s`;
   }, [subtitleOffset]);
 
+  const speedSummary = useMemo(() => `${playbackSpeed}x`, [playbackSpeed]);
+  const hasSpeedSelection = Boolean(onPlaybackSpeedChange);
+
   // Hide all track selection for live TV
   const hasAudioSelection = allowTrackSelection && Boolean(onSelectAudioTrack) && audioTracks.length > 0 && !isLiveTV;
   const hasSubtitleSelection = allowTrackSelection && Boolean(onSelectSubtitleTrack) && !isLiveTV;
@@ -222,6 +232,7 @@ const Controls: React.FC<ControlsProps> = ({
     const parts: string[] = [];
     if (hasAudioSelection) parts.push('audio');
     if (hasSubtitleSelection) parts.push('sub');
+    if (hasSpeedSelection) parts.push('speed');
     if (isTvPlatform && onPreviousEpisode) parts.push('prev');
     if (isTvPlatform && onNextEpisode) parts.push('next');
     if (isTvPlatform && showSubtitleOffset) parts.push('offset');
@@ -230,6 +241,7 @@ const Controls: React.FC<ControlsProps> = ({
   }, [
     hasAudioSelection,
     hasSubtitleSelection,
+    hasSpeedSelection,
     isTvPlatform,
     onPreviousEpisode,
     onNextEpisode,
@@ -247,6 +259,7 @@ const Controls: React.FC<ControlsProps> = ({
     'subtitle-track-button': subtitleButtonRef,
     'subtitle-track-button-secondary': subtitleButtonRef,
     'info-button': infoButtonRef,
+    'speed-button': speedButtonRef,
   }), []);
 
   const openMenu = useCallback(
@@ -381,6 +394,7 @@ const Controls: React.FC<ControlsProps> = ({
   );
   const handleSubtitleOffsetLaterFocus = useCallback(() => onFocusChange?.('subtitle-offset-later'), [onFocusChange]);
   const handleInfoFocus = useCallback(() => onFocusChange?.('info-button'), [onFocusChange]);
+  const handleSpeedFocus = useCallback(() => onFocusChange?.('speed-button'), [onFocusChange]);
 
   // Memoize menu openers to stabilize onSelect props
   const handleOpenAudioMenu = useCallback(() => openMenu('audio', 'audio-track-button'), [openMenu]);
@@ -389,6 +403,19 @@ const Controls: React.FC<ControlsProps> = ({
     [openMenu, hasAudioSelection],
   );
   const handleOpenInfoMenu = useCallback(() => openMenu('info', 'info-button'), [openMenu]);
+  const handleOpenSpeedMenu = useCallback(() => openMenu('speed', 'speed-button'), [openMenu]);
+
+  // Speed button content: icon with overlaid speed value
+  const speedIconSize = isTvPlatform ? 28 : 24;
+  const speedBadgeFontSize = isTvPlatform ? 9 : 7;
+  const speedIcon = (
+    <View style={styles.speedIconContainer}>
+      <Ionicons name="speedometer-outline" size={speedIconSize} color={theme.colors.text.primary} />
+      <View style={[styles.speedBadge, { minWidth: speedBadgeFontSize * 3 }]}>
+        <Text style={[styles.speedBadgeText, { fontSize: speedBadgeFontSize }]}>{playbackSpeed !== 1 ? `${playbackSpeed}x` : '1x'}</Text>
+      </View>
+    </View>
+  );
 
   return (
     <>
@@ -581,6 +608,7 @@ const Controls: React.FC<ControlsProps> = ({
           {/* Secondary row: control buttons below progress bar */}
           {(hasAudioSelection ||
             hasSubtitleSelection ||
+            hasSpeedSelection ||
             (isTvPlatform && streamInfo) ||
             (isTvPlatform && (onPreviousEpisode || onNextEpisode)) ||
             (isTvPlatform && showSubtitleOffset) ||
@@ -618,6 +646,13 @@ const Controls: React.FC<ControlsProps> = ({
                           </View>
                         )}
                         <View style={styles.pipButtonSpacer} />
+                        {hasSpeedSelection && (
+                          <Pressable
+                            onPress={handleOpenSpeedMenu}
+                            style={[styles.controlButton, styles.trackButton, styles.pipButton]}>
+                            {speedIcon}
+                          </Pressable>
+                        )}
                         <Pressable
                           onPress={onEnterPip}
                           style={[styles.controlButton, styles.trackButton, styles.pipButton]}>
@@ -631,16 +666,25 @@ const Controls: React.FC<ControlsProps> = ({
                     ) : (
                       <View style={styles.mobilePipContainer} pointerEvents="box-none">
                         {hasAudioSelection && audioSummary && hasSubtitleSelection && subtitleSummary && (
-                          <View style={styles.trackButtonGroup} pointerEvents="box-none">
-                            <FocusablePressable
-                              icon="musical-notes"
-                              focusKey="audio-track-button"
-                              onSelect={handleOpenAudioMenu}
-                              onFocus={handleAudioTrackFocus}
-                              style={[styles.controlButton, styles.trackButton]}
-                              disabled={isSeeking || activeMenu !== null}
-                            />
-                            <Text style={styles.trackLabel}>{audioSummary}</Text>
+                          <View style={styles.mobilePipRow} pointerEvents="box-none">
+                            <View style={styles.trackButtonGroupFlex} pointerEvents="box-none">
+                              <FocusablePressable
+                                icon="musical-notes"
+                                focusKey="audio-track-button"
+                                onSelect={handleOpenAudioMenu}
+                                onFocus={handleAudioTrackFocus}
+                                style={[styles.controlButton, styles.trackButton]}
+                                disabled={isSeeking || activeMenu !== null}
+                              />
+                              <Text style={styles.trackLabel}>{audioSummary}</Text>
+                            </View>
+                            {hasSpeedSelection && (
+                              <Pressable
+                                onPress={handleOpenSpeedMenu}
+                                style={[styles.controlButton, styles.trackButton, styles.pipButton]}>
+                                {speedIcon}
+                              </Pressable>
+                            )}
                           </View>
                         )}
                         <View style={styles.mobilePipRow} pointerEvents="box-none">
@@ -709,6 +753,20 @@ const Controls: React.FC<ControlsProps> = ({
                             />
                           )}
                           <Text style={styles.trackLabel}>{audioSummary}</Text>
+                        </View>
+                      )}
+                      {hasSpeedSelection && (
+                        <View style={styles.trackButtonGroup} pointerEvents="box-none">
+                          <FocusablePressable
+                            ref={speedButtonRef}
+                            icon="speedometer-outline"
+                            focusKey="speed-button"
+                            onSelect={handleOpenSpeedMenu}
+                            onFocus={handleSpeedFocus}
+                            style={[styles.controlButton, styles.trackButton]}
+                            disabled={isSeeking || activeMenu !== null}
+                          />
+                          <Text style={styles.trackLabel}>{speedSummary}</Text>
                         </View>
                       )}
                       {hasSubtitleSelection && subtitleSummary && !hasAudioSelection && (
@@ -1025,6 +1083,26 @@ const useControlsStyles = (theme: NovaTheme, screenWidth: number) => {
       justifyContent: 'center',
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.border.subtle,
+    },
+    // Speed icon with overlaid badge
+    speedIconContainer: {
+      position: 'relative' as const,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    speedBadge: {
+      position: 'absolute' as const,
+      bottom: -2,
+      alignSelf: 'center',
+      backgroundColor: 'rgba(0,0,0,0.75)',
+      borderRadius: 3,
+      paddingHorizontal: 2,
+      paddingVertical: 0.5,
+    },
+    speedBadgeText: {
+      color: theme.colors.text.primary,
+      fontWeight: '700' as const,
+      textAlign: 'center' as const,
     },
     // Portrait: stacked layout container
     mobilePipContainer: {

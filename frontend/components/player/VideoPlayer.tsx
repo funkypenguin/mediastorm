@@ -83,6 +83,7 @@ const NativePlayerAdapter = React.forwardRef<VideoPlayerHandle, VideoPlayerProps
     externalSubtitleUrl,
     isHDR,
     isDV,
+    rate,
   } = props;
 
   const playerRef = useRef<NativePlayerRef>(null);
@@ -351,6 +352,7 @@ const NativePlayerAdapter = React.forwardRef<VideoPlayerHandle, VideoPlayerProps
         externalSubtitleUrl={externalSubtitleUrl}
         isHDR={isHDR}
         isDV={isDV}
+        rate={rate}
         style={nativePlayerStyles.player}
         onLoad={handleLoad}
         onProgress={handleProgress}

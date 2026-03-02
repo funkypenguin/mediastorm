@@ -77,4 +77,6 @@ export interface VideoPlayerProps {
   isHDR?: boolean;
   /** Route to ExoPlayer for Dolby Vision passthrough (Android only) */
   isDV?: boolean;
+  /** Playback speed multiplier (1.0 = normal) */
+  rate?: number;
 }
