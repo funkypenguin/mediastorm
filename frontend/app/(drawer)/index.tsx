@@ -3607,10 +3607,18 @@ function VirtualizedShelf({
   const rowHeight = cardHeight + cardSpacing;
 
   // Early return for collapsed shelves - must be after all hooks
+  // Still render the list (with empty data) so its LRUD node registers in DOM order
   if (shouldCollapse) {
     return (
       <View ref={containerRef} style={[styles.shelf, styles.shelfCollapsed]} accessibilityElementsHidden>
-        {/* Empty collapsed shelf */}
+        <SpatialNavigationVirtualizedList
+          data={cards}
+          renderItem={renderItem}
+          itemSize={itemSize}
+          additionalItemsRendered={2}
+          orientation="horizontal"
+          scrollDuration={300}
+        />
       </View>
     );
   }
@@ -3622,22 +3630,21 @@ function VirtualizedShelf({
       <View style={styles.shelfTitleWrapper}>
         <Text style={styles.shelfTitle}>{title}</Text>
       </View>
-      {shouldShowEmptyState ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyCardText}>{collapseIfEmpty ? 'Loading...' : 'Nothing to show yet'}</Text>
-        </View>
-      ) : (
-        <View style={{ height: rowHeight }}>
-          <SpatialNavigationVirtualizedList
-            data={cards}
-            renderItem={renderItem}
-            itemSize={itemSize}
-            additionalItemsRendered={2}
-            orientation="horizontal"
-            scrollDuration={300}
-          />
-        </View>
-      )}
+      <View style={{ height: rowHeight }}>
+        {shouldShowEmptyState && (
+          <View style={[styles.emptyCard, { position: 'absolute', zIndex: 1 }]}>
+            <Text style={styles.emptyCardText}>{collapseIfEmpty ? 'Loading...' : 'Nothing to show yet'}</Text>
+          </View>
+        )}
+        <SpatialNavigationVirtualizedList
+          data={cards}
+          renderItem={renderItem}
+          itemSize={itemSize}
+          additionalItemsRendered={2}
+          orientation="horizontal"
+          scrollDuration={300}
+        />
+      </View>
     </View>
   );
 }
