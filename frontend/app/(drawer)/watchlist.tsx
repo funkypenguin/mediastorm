@@ -683,6 +683,10 @@ export default function WatchlistScreen() {
     void fetchMissingData();
   }, [items, activeUserId]); // Removed watchlistYears from deps - using ref instead
 
+  // Runtime cache for explore/collection items that don't have runtimeMinutes from the API
+  const [runtimeCache, setRuntimeCache] = useState<Map<string, number>>(new Map());
+  const fetchedRuntimeIdsRef = useRef<Set<string>>(new Set());
+
   // Track which movie IDs we've already fetched releases for (avoids re-fetching on re-renders)
   const fetchedReleaseIdsRef = useRef<Set<string>>(new Set());
 
@@ -1044,20 +1048,24 @@ export default function WatchlistScreen() {
     if (watchStatusFilter !== 'all') result = result.filter((t) => (t as WatchlistTitle & { watchState?: string }).watchState === watchStatusFilter);
     if (selectedGenres.length > 0) result = result.filter((t) => t.genres?.some((g) => selectedGenres.includes(g)));
     const sorted = [...result];
+
+    // Helper to get runtime from item or fallback cache (for explore/collection items)
+    const getRuntime = (item: WatchlistTitle) => (item as WatchlistTitle).runtimeMinutes || runtimeCache.get(item.id) || 0;
+
     sorted.sort((a, b) => {
       let cmp = 0;
       switch (sortBy) {
         case 'added': cmp = ((a as WatchlistTitle).addedAt ?? '').localeCompare((b as WatchlistTitle).addedAt ?? ''); break;
         case 'name': cmp = a.name.localeCompare(b.name); break;
         case 'year': cmp = (a.year || 0) - (b.year || 0); break;
-        case 'duration': cmp = ((a as WatchlistTitle).runtimeMinutes || 0) - ((b as WatchlistTitle).runtimeMinutes || 0); break;
+        case 'duration': cmp = getRuntime(a as WatchlistTitle) - getRuntime(b as WatchlistTitle); break;
       }
       return sortDirection === 'desc' ? -cmp : cmp;
     });
     // When sorting by duration, show runtime as card subtitle
     if (sortBy === 'duration') {
       return sorted.map((item) => {
-        const mins = (item as WatchlistTitle).runtimeMinutes;
+        const mins = getRuntime(item as WatchlistTitle);
         if (!mins) return item;
         const hrs = Math.floor(mins / 60);
         const m = mins % 60;
@@ -1066,7 +1074,7 @@ export default function WatchlistScreen() {
       });
     }
     return sorted;
-  }, [allTitles, filter, watchStatusFilter, selectedGenres, sortBy, sortDirection]);
+  }, [allTitles, filter, watchStatusFilter, selectedGenres, sortBy, sortDirection, runtimeCache]);
 
   const filterOptions: Array<{ key: 'all' | 'movie' | 'series'; label: string; icon: keyof typeof Ionicons.glyphMap }> =
     [
@@ -1082,13 +1090,70 @@ export default function WatchlistScreen() {
       { key: 'complete', label: 'Watched', icon: 'checkmark-circle-outline' },
     ];
 
-  const sortOptions: Array<{ key: 'added' | 'name' | 'year' | 'duration'; label: string; icon: keyof typeof Ionicons.glyphMap }> =
-    [
-      { key: 'added', label: 'Added', icon: 'time-outline' },
-      { key: 'name', label: 'Name', icon: 'text-outline' },
-      { key: 'year', label: 'Year', icon: 'calendar-outline' },
-      { key: 'duration', label: 'Duration', icon: 'hourglass-outline' },
-    ];
+  // Fetch runtime on-demand when sorting by duration for items missing it (e.g., explore/trending items)
+  useEffect(() => {
+    if (sortBy !== 'duration') return;
+    const moviesMissingRuntime = allTitles.filter((item) => {
+      if (item.mediaType !== 'movie') return false;
+      if ((item as WatchlistTitle).runtimeMinutes) return false;
+      if (runtimeCache.has(item.id)) return false;
+      if (fetchedRuntimeIdsRef.current.has(item.id)) return false;
+      return true;
+    });
+    if (moviesMissingRuntime.length === 0) return;
+
+    moviesMissingRuntime.forEach((item) => fetchedRuntimeIdsRef.current.add(item.id));
+
+    const fetchRuntimes = async () => {
+      const updates = new Map<string, number>();
+      for (const item of moviesMissingRuntime) {
+        try {
+          const details = await apiService.getMovieDetails({
+            tmdbId: item.tmdbId,
+            imdbId: item.imdbId,
+            name: item.name,
+          });
+          if (details?.runtimeMinutes) {
+            updates.set(item.id, details.runtimeMinutes);
+          }
+        } catch { /* skip */ }
+      }
+      if (updates.size > 0) {
+        setRuntimeCache((prev) => new Map([...prev, ...updates]));
+      }
+    };
+
+    void fetchRuntimes();
+  }, [sortBy, allTitles, runtimeCache]);
+
+  // Hide "Added" sort when items don't have meaningful addedAt (explore/trending/collection lists)
+  const hasDistinctAddedAt = useMemo(() => {
+    const dates = allTitles
+      .map((t) => (t as WatchlistTitle).addedAt)
+      .filter(Boolean) as string[];
+    if (dates.length < 2) return false;
+    // All within 60s → treat as batch-loaded, not user-curated
+    const timestamps = dates.map((d) => new Date(d).getTime());
+    const spread = Math.max(...timestamps) - Math.min(...timestamps);
+    return spread > 60_000;
+  }, [allTitles]);
+
+  const sortOptions = useMemo(() => {
+    const opts: Array<{ key: 'added' | 'name' | 'year' | 'duration'; label: string; icon: keyof typeof Ionicons.glyphMap }> = [];
+    if (hasDistinctAddedAt) opts.push({ key: 'added', label: 'Added', icon: 'time-outline' });
+    opts.push({ key: 'name', label: 'Name', icon: 'text-outline' });
+    opts.push({ key: 'year', label: 'Year', icon: 'calendar-outline' });
+    opts.push({ key: 'duration', label: 'Duration', icon: 'hourglass-outline' });
+    return opts;
+  }, [hasDistinctAddedAt]);
+
+  // Fall back to 'name' sort when 'added' is no longer available (explore/trending lists)
+  useEffect(() => {
+    if (sortBy === 'added' && !hasDistinctAddedAt) {
+      setSortBy('name');
+      setSortDirection('asc');
+    }
+  }, [sortBy, hasDistinctAddedAt]);
 
   // Person header component for ListHeaderComponent (scrolls with grid)
   const personHeaderComponent = useMemo(() => {
