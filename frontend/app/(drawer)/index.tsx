@@ -538,7 +538,7 @@ function IndexScreen() {
     error: continueWatchingError,
   } = useContinueWatchingData();
   const { refresh: refreshContinueWatching } = useContinueWatchingActions();
-  const { refresh: refreshUserProfiles, activeUserId, activeUser, pendingPinUserId, profileSelectorVisibleRef, profileSelectorVisible, profileChangeGeneration } =
+  const { users, loading: profilesLoading, refresh: refreshUserProfiles, activeUserId, activeUser, pendingPinUserId, profileSelectorVisibleRef, profileSelectorVisible, profileChangeGeneration } =
     useUserProfiles();
   const {
     data: trendingMovies,
@@ -821,6 +821,16 @@ function IndexScreen() {
       }
     }
   }, [errorEntries, hasAuthFailure, showToast, backendLoadError, isBackendReachable]);
+
+  useEffect(() => {
+    if (!profilesLoading && activeUserId === null && users.length === 0) {
+      showToast('No profile found for your account. Please ensure your account has an associated profile.', {
+        tone: 'danger',
+        id: 'no-profile',
+        duration: 0,
+      });
+    }
+  }, [profilesLoading, activeUserId, users.length, showToast]);
 
   // Shelf scrolling with position caching - uses Reanimated shared value for UI-thread animation
   const scrollToShelf = useCallback(
