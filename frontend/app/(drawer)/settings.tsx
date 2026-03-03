@@ -61,19 +61,10 @@ import { Stack, router } from 'expo-router';
 import { useKonamiCode, KONAMI_SEQUENCE } from '@/hooks/useKonamiCode';
 import { SpaceShooterGame } from '@/components/SpaceShooterGame';
 import { DPad } from '@/components/DPad';
+import { downloadAndInstall as apkDownloadAndInstall, addProgressListener as addApkProgressListener } from 'apk-updater';
 
 const TV_BRANDING_IMAGE = require('@/assets/images/tv-branding-square.png');
 
-// expo-updates may not be available in all builds (e.g., development builds without it)
-// Use a getter to lazily load the module only when actually accessed
-const getUpdates = (): typeof import('expo-updates') | null => {
-  try {
-    return require('expo-updates');
-  } catch {
-    // Module not available - updates functionality will be disabled
-    return null;
-  }
-};
 
 type SettingsTab = 'connection' | 'content' | 'playback' | 'home' | 'advanced' | 'live' | 'filtering';
 
@@ -940,8 +931,9 @@ function SettingsScreen() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [isSubmittingLogs, setIsSubmittingLogs] = useState(false);
   const [logUrl, setLogUrl] = useState<string | null>(null);
-  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'downloading' | 'ready'>('idle');
-  const [githubRelease, setGithubRelease] = useState<{ version: string; url: string } | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'downloading'>('idle');
+  const [githubRelease, setGithubRelease] = useState<{ version: string; url: string; apkDownloadUrl: string | null } | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Handle left key to open menu when spatial nav can't move further left
@@ -1233,51 +1225,6 @@ function SettingsScreen() {
     }
   }, [isSubmittingLogs, showToast]);
 
-  const handleCheckForUpdates = useCallback(async () => {
-    const Updates = getUpdates();
-    if (!Updates) {
-      showToast('Updates not available in this build', { tone: 'info' });
-      return;
-    }
-    if (__DEV__) {
-      showToast('Updates disabled in development mode', { tone: 'info' });
-      return;
-    }
-    if (updateStatus === 'checking' || updateStatus === 'downloading') return;
-
-    setUpdateStatus('checking');
-    try {
-      const update = await Updates.checkForUpdateAsync();
-      if (update.isAvailable) {
-        setUpdateStatus('downloading');
-        showToast('Downloading update...', { tone: 'info' });
-        await Updates.fetchUpdateAsync();
-        setUpdateStatus('ready');
-        showToast('Update ready - tap to restart', { tone: 'success' });
-      } else {
-        showToast('App is up to date', { tone: 'success' });
-        setUpdateStatus('idle');
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to check for updates';
-      showToast(message, { tone: 'danger' });
-      setUpdateStatus('idle');
-    }
-  }, [updateStatus, showToast]);
-
-  const handleApplyUpdate = useCallback(async () => {
-    const Updates = getUpdates();
-    if (!Updates) {
-      showToast('Updates not available in this build', { tone: 'info' });
-      return;
-    }
-    try {
-      await Updates.reloadAsync();
-    } catch (err) {
-      showToast('Failed to restart app', { tone: 'danger' });
-    }
-  }, [showToast]);
-
   // Compare semantic versions: returns true if remote > local
   const isNewerVersion = useCallback((local: string, remote: string): boolean => {
     const parseVersion = (v: string) => {
@@ -1309,7 +1256,16 @@ function SettingsScreen() {
       // Remove 'v' prefix if present
       const remoteVersion = tagName.replace(/^v/, '');
       if (isNewerVersion(APP_VERSION, remoteVersion)) {
-        setGithubRelease({ version: remoteVersion, url: data.html_url });
+        // Find matching APK asset for this device type
+        let apkDownloadUrl: string | null = null;
+        if (Platform.OS === 'android' && Array.isArray(data.assets)) {
+          const prefix = isTV ? 'mediastorm-tv-' : 'mediastorm-mobile-';
+          const asset = data.assets.find((a: { name: string }) => a.name?.startsWith(prefix) && a.name?.endsWith('.apk'));
+          if (asset?.browser_download_url) {
+            apkDownloadUrl = asset.browser_download_url;
+          }
+        }
+        setGithubRelease({ version: remoteVersion, url: data.html_url, apkDownloadUrl });
         showToast(`New version ${remoteVersion} available!`, { tone: 'success' });
       } else {
         showToast('App is up to date', { tone: 'success' });
@@ -1322,11 +1278,33 @@ function SettingsScreen() {
     }
   }, [updateStatus, showToast, isNewerVersion]);
 
-  const handleOpenGitHubRelease = useCallback(() => {
-    if (githubRelease?.url) {
+  const handleDownloadAndInstall = useCallback(async () => {
+    if (!githubRelease) return;
+
+    if (!githubRelease.apkDownloadUrl) {
+      // Fallback: open release page in browser
       Linking.openURL(githubRelease.url);
+      return;
     }
-  }, [githubRelease]);
+
+    setUpdateStatus('downloading');
+    setDownloadProgress(0);
+
+    const subscription = addApkProgressListener((event) => {
+      setDownloadProgress(event.percent);
+    });
+
+    try {
+      await apkDownloadAndInstall(githubRelease.apkDownloadUrl);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Download failed';
+      showToast(message, { tone: 'danger' });
+    } finally {
+      subscription?.remove();
+      setUpdateStatus('idle');
+      setDownloadProgress(0);
+    }
+  }, [githubRelease, showToast]);
 
   const _updateServerField = useCallback(
     (field: keyof EditableBackendSettings['server']) => (value: string) => {
@@ -1444,10 +1422,10 @@ function SettingsScreen() {
   // TV Grid Data Builders
   const connectionGridData = useMemo<SettingsGridItem[]>(
     () => [
-      {
-        type: 'check-updates',
+      ...(Platform.OS === 'android' ? [{
+        type: 'check-updates' as const,
         id: 'check-updates',
-      },
+      }] : []),
       {
         type: 'header',
         id: 'connection-header',
@@ -1776,28 +1754,17 @@ function SettingsScreen() {
           );
 
         case 'check-updates': {
-          const isAndroid = Platform.OS === 'android';
-          const updateButtonText = isAndroid
-            ? githubRelease
+          const updateButtonText = updateStatus === 'downloading'
+            ? `Downloading... ${downloadProgress}%`
+            : githubRelease
               ? `Download ${githubRelease.version}`
               : updateStatus === 'checking'
                 ? 'Checking...'
-                : 'Check for Updates'
-            : updateStatus === 'checking'
-              ? 'Checking...'
-              : updateStatus === 'downloading'
-                ? 'Downloading...'
-                : updateStatus === 'ready'
-                  ? 'Restart to Apply'
-                  : 'Check for Frontend Updates';
+                : 'Check for Updates';
 
-          const handleUpdatePress = isAndroid
-            ? githubRelease
-              ? handleOpenGitHubRelease
-              : handleCheckGitHubReleases
-            : updateStatus === 'ready'
-              ? handleApplyUpdate
-              : handleCheckForUpdates;
+          const handleUpdatePress = githubRelease
+            ? handleDownloadAndInstall
+            : handleCheckGitHubReleases;
 
           return (
             <View style={[styles.tvGridItemFullWidth, styles.tvGridItemSpacing]}>
@@ -1832,9 +1799,7 @@ function SettingsScreen() {
                 <View style={styles.backendInfoNote}>
                   <Ionicons name="information-circle-outline" size={18} color={theme.colors.text.muted} />
                   <Text style={styles.backendInfoNoteText}>
-                    {isAndroid
-                      ? 'Backend is updated independently via Docker'
-                      : 'App updates via TestFlight. Backend updated via Docker.'}
+                    Backend is updated independently via Docker
                   </Text>
                 </View>
               </View>
@@ -1878,11 +1843,10 @@ function SettingsScreen() {
       backendVersion,
       clientId,
       updateStatus,
-      handleCheckForUpdates,
-      handleApplyUpdate,
       handleCheckGitHubReleases,
-      handleOpenGitHubRelease,
+      handleDownloadAndInstall,
       githubRelease,
+      downloadProgress,
     ],
   );
 
@@ -2064,47 +2028,26 @@ function SettingsScreen() {
                       </Text>
                     </Pressable>
                   </View>
-                  {Platform.OS === 'android' ? (
+                  {Platform.OS === 'android' && (
                     <>
                       <FocusablePressable
                         text={
-                          githubRelease
-                            ? `Download ${githubRelease.version}`
-                            : updateStatus === 'checking'
-                              ? 'Checking...'
-                              : 'Check for Updates'
+                          updateStatus === 'downloading'
+                            ? `Downloading... ${downloadProgress}%`
+                            : githubRelease
+                              ? `Download ${githubRelease.version}`
+                              : updateStatus === 'checking'
+                                ? 'Checking...'
+                                : 'Check for Updates'
                         }
-                        onSelect={githubRelease ? handleOpenGitHubRelease : handleCheckGitHubReleases}
-                        disabled={updateStatus === 'checking'}
-                        style={[styles.debugButton, { marginTop: 12 }]}
-                      />
-                      <View style={styles.backendInfoNoteMobile}>
-                        <Ionicons name="information-circle-outline" size={16} color={theme.colors.text.muted} />
-                        <Text style={styles.backendInfoNoteTextMobile}>
-                          Backend is updated independently via Docker
-                        </Text>
-                      </View>
-                    </>
-                  ) : (
-                    <>
-                      <FocusablePressable
-                        text={
-                          updateStatus === 'checking'
-                            ? 'Checking...'
-                            : updateStatus === 'downloading'
-                              ? 'Downloading...'
-                              : updateStatus === 'ready'
-                                ? 'Restart to Apply'
-                                : 'Check for Frontend Updates'
-                        }
-                        onSelect={updateStatus === 'ready' ? handleApplyUpdate : handleCheckForUpdates}
+                        onSelect={githubRelease ? handleDownloadAndInstall : handleCheckGitHubReleases}
                         disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
                         style={[styles.debugButton, { marginTop: 12 }]}
                       />
                       <View style={styles.backendInfoNoteMobile}>
                         <Ionicons name="information-circle-outline" size={16} color={theme.colors.text.muted} />
                         <Text style={styles.backendInfoNoteTextMobile}>
-                          App updates via TestFlight. Backend updated via Docker.
+                          Backend is updated independently via Docker
                         </Text>
                       </View>
                     </>
