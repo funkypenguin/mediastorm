@@ -176,9 +176,9 @@ const withVoiceSearchMainActivity = (config) => {
 
       // Add onNewIntent override (handles warm start — app already running)
       const onNewIntentCode = `
-  override fun onNewIntent(intent: Intent?) {
-    android.util.Log.d("VoiceSearch", "onNewIntent called, action: \${intent?.action}, extras: \${intent?.extras?.keySet()?.joinToString()}")
-    if (intent?.action == Intent.ACTION_SEARCH) {
+  override fun onNewIntent(intent: Intent) {
+    android.util.Log.d("VoiceSearch", "onNewIntent called, action: \${intent.action}, extras: \${intent.extras?.keySet()?.joinToString()}")
+    if (intent.action == Intent.ACTION_SEARCH) {
       val query = intent.getStringExtra(SearchManager.QUERY)
       android.util.Log.d("VoiceSearch", "onNewIntent ACTION_SEARCH received, query: $query")
       if (!query.isNullOrBlank()) {
@@ -190,7 +190,7 @@ const withVoiceSearchMainActivity = (config) => {
         android.util.Log.w("VoiceSearch", "onNewIntent ACTION_SEARCH but query was null/blank")
       }
     }
-    android.util.Log.d("VoiceSearch", "onNewIntent passing through to super, action: \${intent?.action}")
+    android.util.Log.d("VoiceSearch", "onNewIntent passing through to super, action: \${intent.action}")
     super.onNewIntent(intent)
   }
 `;
