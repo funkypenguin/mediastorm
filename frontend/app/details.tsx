@@ -1669,7 +1669,7 @@ export default function DetailsScreen() {
         // Design values: pixel offsets from top of viewport on 1080p.
         // Scaled proportionally to actual viewport height.
         const scale = windowHeight / TV_REFERENCE_HEIGHT;
-        if (key === 'actions') return Math.round(900 * scale);
+        if (key === 'actions') return Math.round(890 * scale);
         // Episodes/seasons, cast, similar — near top with heading visible
         return Math.round(130 * scale);
       };

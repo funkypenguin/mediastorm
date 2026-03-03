@@ -461,7 +461,7 @@ export const createDetailsStyles = (theme: NovaTheme, screenHeight = 0) => {
       // Same total height as tvTrackSelectionContainer + button row to prevent layout shift
       marginTop: -(tvScale * 16),
       marginBottom: tvScale * 16,
-      height: tvScale * 32, // Matches track button row height (paddingVertical + text + icon)
+      height: tvScale * 42, // Matches track button row height (paddingVertical + text + icon + capsule border)
     },
     episodeNavigationRow: {
       flexDirection: 'row',
