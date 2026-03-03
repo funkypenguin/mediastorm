@@ -13,7 +13,7 @@ const HIGHLIGHT_SWEEP_DURATION_MS = 4200;
 const CIRCLE_PULSE_DURATION_MS = 3200;
 const BACKGROUND_WAVE_DURATION_MS = 7000;
 
-export default function StrmrLoadingScreen() {
+export default function StrmrLoadingScreen({ embedded = false }: { embedded?: boolean }) {
   const theme = useTheme();
   const letterAnimations = useMemo(() => STRMR_LETTERS.map(() => new Animated.Value(0)), []);
   const highlightRotation = useRef(new Animated.Value(0)).current;
@@ -111,12 +111,14 @@ export default function StrmrLoadingScreen() {
 
   return (
     <FixedSafeAreaView style={[styles.safeArea, { backgroundColor: theme.colors.background.base }]}>
-      <Stack.Screen
-        options={{
-          title: 'mediastorm loading',
-          headerShown: false,
-        }}
-      />
+      {!embedded && (
+        <Stack.Screen
+          options={{
+            title: 'mediastorm loading',
+            headerShown: false,
+          }}
+        />
+      )}
       <View style={styles.gradientContainer}>
         <Animated.View
           pointerEvents="none"

@@ -415,8 +415,13 @@ export function usePlayback(params: UsePlaybackParams): PlaybackResult {
   }, [isResolving]);
 
   // -------------------------------------------------------------------------
-  // Black overlay cleanup on unmount
+  // Black overlay cleanup on unmount / return from player
   // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (isDetailsPageActive && showBlackOverlay) {
+      setShowBlackOverlay(false);
+    }
+  }, [isDetailsPageActive, showBlackOverlay]);
   useEffect(() => {
     return () => {
       setShowBlackOverlay(false);

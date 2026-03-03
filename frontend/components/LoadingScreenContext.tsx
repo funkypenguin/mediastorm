@@ -1,11 +1,13 @@
-import { createContext, ReactNode, useCallback, useContext, useMemo, useRef, useState } from 'react';
-import { Animated, Dimensions, Modal, Platform, StyleSheet } from 'react-native';
+import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, BackHandler, Dimensions, Platform, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import StrmrLoadingScreen from '@/app/strmr-loading';
 import { useBackendSettings } from './BackendSettingsContext';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
+const FADE_IN_DURATION = 300;
+const FADE_OUT_DURATION = 400;
 
 type LoadingScreenContextValue = {
   showLoadingScreen: () => void;
@@ -29,63 +31,109 @@ type LoadingScreenProviderProps = {
 };
 
 export function LoadingScreenProvider({ children }: LoadingScreenProviderProps) {
+  // isVisible = logical state (true while loading screen should be shown)
+  // isRendered = keeps overlay mounted during fade-out animation
   const [isVisible, setIsVisible] = useState(false);
+  const [isRendered, setIsRendered] = useState(false);
   const [onCancelCallback, setOnCancelCallback] = useState<(() => void) | null>(null);
   const { settings, userSettings } = useBackendSettings();
-  // User settings take precedence over global settings
   const isLoadingScreenEnabled =
     userSettings?.playback?.useLoadingScreen ?? settings?.playback?.useLoadingScreen ?? false;
   const translateX = useRef(new Animated.Value(0)).current;
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  // Track desired visibility — the effect below drives the actual animations
+  const wantsVisibleRef = useRef(false);
+  const fadeOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showLoadingScreen = useCallback(() => {
-    // Only show if the feature is enabled in settings
     if (isLoadingScreenEnabled) {
+      // Cancel any in-progress fade-out
+      if (fadeOutTimerRef.current) {
+        clearTimeout(fadeOutTimerRef.current);
+        fadeOutTimerRef.current = null;
+      }
+      wantsVisibleRef.current = true;
       translateX.setValue(0);
+      opacity.setValue(0);
       setIsVisible(true);
+      setIsRendered(true);
     }
-  }, [isLoadingScreenEnabled, translateX]);
+  }, [isLoadingScreenEnabled, translateX, opacity]);
+
+  // Fade in once the overlay is mounted
+  useEffect(() => {
+    if (isRendered && wantsVisibleRef.current) {
+      requestAnimationFrame(() => {
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: FADE_IN_DURATION,
+          useNativeDriver: true,
+        }).start();
+      });
+    }
+  }, [isRendered, opacity]);
 
   const hideLoadingScreen = useCallback(() => {
+    wantsVisibleRef.current = false;
     setIsVisible(false);
-    translateX.setValue(0);
-  }, [translateX]);
+    Animated.timing(opacity, {
+      toValue: 0,
+      duration: FADE_OUT_DURATION,
+      useNativeDriver: true,
+    }).start(() => {
+      // Guard: only unmount if still meant to be hidden (avoid race with rapid show/hide)
+      if (!wantsVisibleRef.current) {
+        setIsRendered(false);
+        translateX.setValue(0);
+      }
+    });
+  }, [translateX, opacity]);
 
   const setOnCancel = useCallback((callback: (() => void) | null) => {
     setOnCancelCallback(() => callback);
   }, []);
 
   const handleCancel = useCallback(() => {
-    // Animate out before hiding
+    // Slide out then hide
     Animated.timing(translateX, {
       toValue: SCREEN_WIDTH,
       duration: 250,
       useNativeDriver: true,
     }).start(() => {
-      // Call the cancel callback if set
       if (onCancelCallback) {
         onCancelCallback();
       }
-      hideLoadingScreen();
+      setIsVisible(false);
+      setIsRendered(false);
+      translateX.setValue(0);
+      opacity.setValue(0);
     });
-  }, [onCancelCallback, hideLoadingScreen, translateX]);
+  }, [onCancelCallback, translateX, opacity]);
+
+  // Handle Android back button when loading screen is visible
+  useEffect(() => {
+    if (!isVisible) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleCancel();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [isVisible, handleCancel]);
 
   const swipeGesture = useMemo(
     () =>
       Gesture.Pan()
         .activeOffsetX(10)
         .onChange((event) => {
-          // Only allow dragging to the right
           if (event.translationX > 0) {
             translateX.setValue(event.translationX);
           }
         })
         .onEnd((event) => {
-          // Detect swipe from left edge (iOS style back gesture)
-          // or swipe right with sufficient velocity
           const shouldDismiss = event.translationX > SCREEN_WIDTH * 0.3 || event.velocityX > 500;
 
           if (shouldDismiss) {
-            // Animate to full width and dismiss
             Animated.timing(translateX, {
               toValue: SCREEN_WIDTH,
               duration: 200,
@@ -94,10 +142,12 @@ export function LoadingScreenProvider({ children }: LoadingScreenProviderProps) 
               if (onCancelCallback) {
                 onCancelCallback();
               }
-              hideLoadingScreen();
+              setIsVisible(false);
+              setIsRendered(false);
+              translateX.setValue(0);
+              opacity.setValue(0);
             });
           } else {
-            // Snap back to original position
             Animated.spring(translateX, {
               toValue: 0,
               useNativeDriver: true,
@@ -107,7 +157,7 @@ export function LoadingScreenProvider({ children }: LoadingScreenProviderProps) 
           }
         })
         .runOnJS(true),
-    [translateX, onCancelCallback, hideLoadingScreen],
+    [translateX, opacity, onCancelCallback],
   );
 
   const value = useMemo<LoadingScreenContextValue>(
@@ -122,44 +172,36 @@ export function LoadingScreenProvider({ children }: LoadingScreenProviderProps) 
 
   return (
     <LoadingScreenContext.Provider value={value}>
-      {children}
-      {isVisible && (
-        <Modal
-          transparent={true}
-          visible={isVisible}
-          animationType="none"
-          statusBarTranslucent={Platform.OS === 'android'}
-          onRequestClose={handleCancel}
-          style={styles.modal}>
-          <StatusBar hidden />
+      <View style={styles.rootContainer}>
+        {children}
+        {isRendered && (
           <GestureDetector gesture={swipeGesture}>
             <Animated.View
               renderToHardwareTextureAndroid={true}
               style={[
-                styles.animatedContainer,
+                styles.overlay,
                 {
+                  opacity,
                   transform: [{ translateX }],
                 },
               ]}>
-              <StrmrLoadingScreen />
+              <StatusBar hidden />
+              <StrmrLoadingScreen embedded />
             </Animated.View>
           </GestureDetector>
-        </Modal>
-      )}
+        )}
+      </View>
     </LoadingScreenContext.Provider>
   );
 }
 
 const styles = StyleSheet.create({
-  modal: {
-    margin: 0,
-  },
-  container: {
+  rootContainer: {
     flex: 1,
-    backgroundColor: 'transparent',
   },
-  animatedContainer: {
-    flex: 1,
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
     backgroundColor: '#000000',
   },
 });

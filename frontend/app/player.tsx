@@ -29,7 +29,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, AppState, BackHandler, Image, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { Animated, AppState, BackHandler, Dimensions, Image, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useTVDimensions } from '@/hooks/useTVDimensions';
 import { useChannelEPG } from '@/hooks/useChannelEPG';
 import { isAndroidTV, isTablet } from '@/theme/tokens/tvScale';
@@ -55,6 +56,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useBackendSettings } from '@/components/BackendSettingsContext';
 import { useLoadingScreen } from '@/components/LoadingScreenContext';
+import StrmrLoadingScreen from '@/app/strmr-loading';
 import { useToast } from '@/components/ToastContext';
 import { useUserProfiles } from '@/components/UserProfilesContext';
 import { useIntroSkip } from '@/hooks/useIntroSkip';
@@ -112,7 +114,59 @@ import { selectBestSubtitle } from '@/utils/subtitle-helpers';
 
 export default function PlayerScreen() {
   const { settings, userSettings, refreshSettings } = useBackendSettings();
-  const { hideLoadingScreen } = useLoadingScreen();
+  const { hideLoadingScreen, isLoadingScreenVisible } = useLoadingScreen();
+  // Capture whether the loading screen was active when the player mounted.
+  // The player renders its own embedded loading screen (since the context overlay
+  // sits behind the player's native navigation view). We immediately dismiss
+  // the context overlay and fade out the embedded one when playback starts.
+  const showEmbeddedLoadingRef = useRef(isLoadingScreenVisible);
+  const embeddedLoadingOpacity = useRef(new Animated.Value(1)).current;
+  const embeddedLoadingTranslateX = useRef(new Animated.Value(0)).current;
+  const [embeddedLoadingMounted, setEmbeddedLoadingMounted] = useState(showEmbeddedLoadingRef.current);
+  useEffect(() => {
+    if (showEmbeddedLoadingRef.current) {
+      hideLoadingScreen();
+    }
+  }, [hideLoadingScreen]);
+
+  const dismissEmbeddedLoading = useCallback(() => {
+    setEmbeddedLoadingMounted(false);
+    showEmbeddedLoadingRef.current = false;
+    embeddedLoadingOpacity.setValue(0);
+    embeddedLoadingTranslateX.setValue(0);
+    router.back();
+  }, [embeddedLoadingOpacity, embeddedLoadingTranslateX]);
+
+  const embeddedLoadingSwipe = useMemo(() => {
+    const screenWidth = Dimensions.get('window').width;
+    return Gesture.Pan()
+      .activeOffsetX(10)
+      .onChange((event) => {
+        if (event.translationX > 0) {
+          embeddedLoadingTranslateX.setValue(event.translationX);
+        }
+      })
+      .onEnd((event) => {
+        const screenW = Dimensions.get('window').width;
+        if (event.translationX > screenW * 0.3 || event.velocityX > 500) {
+          Animated.timing(embeddedLoadingTranslateX, {
+            toValue: screenWidth,
+            duration: 200,
+            useNativeDriver: true,
+          }).start(() => {
+            dismissEmbeddedLoading();
+          });
+        } else {
+          Animated.spring(embeddedLoadingTranslateX, {
+            toValue: 0,
+            useNativeDriver: true,
+            damping: 20,
+            stiffness: 300,
+          }).start();
+        }
+      })
+      .runOnJS(true);
+  }, [embeddedLoadingTranslateX, dismissEmbeddedLoading]);
   const { showToast } = useToast();
   const {
     movie,
@@ -455,9 +509,7 @@ export default function PlayerScreen() {
   const pauseTeardownUrlRef = useRef<string | null>(null); // URL to restore
   const videoWrapperRef = useRef<View>(null); // For capturing last frame before teardown
   const PAUSE_TEARDOWN_DELAY = 20000; // 20 seconds before teardown
-  const [controlsVisible, setControlsVisible] = useState<boolean>(
-    isTvPlatform || (Platform.OS === 'web' && !prefersSystemControls),
-  );
+  const [controlsVisible, setControlsVisible] = useState<boolean>(false);
   const controlsVisibleRef = useRef<boolean>(controlsVisible);
   // Double-tap gesture handling for mobile skip forward/backward
   const lastTapRef = useRef<{ time: number; side: 'left' | 'right' } | null>(null);
@@ -1248,7 +1300,7 @@ export default function PlayerScreen() {
   // Track skip button seek target to prevent stale progress events from flickering the time display
   // reachedAt tracks when we first got close to target, to continue protecting for a window afterward
   const skipSeekTargetRef = useRef<{ target: number; timestamp: number; reachedAt?: number } | null>(null);
-  const controlsOpacity = useRef(new Animated.Value(isTvPlatform ? 1 : 0)).current;
+  const controlsOpacity = useRef(new Animated.Value(0)).current;
   const canUseNativeDriver = Platform.OS !== 'web';
   const theme = useTheme();
   const debugIdRef = useRef(0);
@@ -3172,10 +3224,16 @@ export default function PlayerScreen() {
           setPaused(false);
         }
 
-        // Hide loading screen with a small delay to ensure player screen is fully visible
-        setTimeout(() => {
-          hideLoadingScreen();
-        }, 100);
+        // Fade out embedded loading screen now that playback has started
+        if (showEmbeddedLoadingRef.current) {
+          Animated.timing(embeddedLoadingOpacity, {
+            toValue: 0,
+            duration: 400,
+            useNativeDriver: true,
+          }).start(() => {
+            setEmbeddedLoadingMounted(false);
+          });
+        }
       }
 
       if (meta?.seekable) {
@@ -3258,7 +3316,7 @@ export default function PlayerScreen() {
       isHlsStream,
       isLiveTV,
       applyPendingSessionSeek,
-      hideLoadingScreen,
+      embeddedLoadingOpacity,
       paused,
       mediaType,
       shuffleMode,
@@ -4224,11 +4282,6 @@ export default function PlayerScreen() {
     ],
   );
 
-  useEffect(() => {
-    if (!usesSystemManagedControls) {
-      showControls();
-    }
-  }, [usesSystemManagedControls, showControls]);
 
   useEffect(() => {
     if (!shouldAutoHideControls) {
@@ -6923,6 +6976,21 @@ export default function PlayerScreen() {
           )}
         </View>
       </FixedSafeAreaView>
+      {/* Embedded loading screen — rendered inside the player so it sits above
+          the native navigation view. Starts at full opacity and fades out
+          when playback actually starts. Swipe right to cancel and go back. */}
+      {embeddedLoadingMounted && (
+        <GestureDetector gesture={embeddedLoadingSwipe}>
+          <Animated.View style={{
+            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+            zIndex: 99999,
+            opacity: embeddedLoadingOpacity,
+            transform: [{ translateX: embeddedLoadingTranslateX }],
+          }}>
+            <StrmrLoadingScreen embedded />
+          </Animated.View>
+        </GestureDetector>
+      )}
     </>
   );
 }
