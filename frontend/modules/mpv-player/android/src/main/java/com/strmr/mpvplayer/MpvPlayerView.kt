@@ -206,7 +206,9 @@ class MpvPlayerView(
             MPVLib.setOptionString("sub-border-style", "background-box")
             MPVLib.setOptionString("sub-back-color", "#99000000")    // 60% black background box
             MPVLib.setOptionString("sub-border-size", "3")           // padding inside background box
+            MPVLib.setOptionString("sub-border-color", "#00000000")   // no visible box border
             MPVLib.setOptionString("sub-shadow-offset", "0")
+            MPVLib.setOptionString("sub-shadow-color", "#00000000")   // no text outline/shadow
 
             MPVLib.init()
             MPVLib.addObserver(this)

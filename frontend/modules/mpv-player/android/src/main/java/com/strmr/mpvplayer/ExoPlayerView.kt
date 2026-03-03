@@ -161,8 +161,8 @@ class ExoPlayerView(
                 Color.WHITE,
                 0x99000000.toInt(), // 60% black background
                 Color.TRANSPARENT,
-                CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                Color.BLACK,
+                CaptionStyleCompat.EDGE_TYPE_NONE,
+                Color.TRANSPARENT,
                 Typeface.DEFAULT_BOLD
             )
         )
@@ -653,8 +653,8 @@ class ExoPlayerView(
                 currentFgColor,
                 currentBgColor,
                 Color.TRANSPARENT,
-                CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                Color.BLACK,
+                CaptionStyleCompat.EDGE_TYPE_NONE,
+                Color.TRANSPARENT,
                 Typeface.DEFAULT_BOLD
             )
         )
@@ -716,12 +716,11 @@ class ExoPlayerView(
 
     private fun updateSubtitlePosition() {
         val marginDp = baseSubtitleMarginY + if (controlsVisible) 125 else 0
-        val marginPx = TypedValue.applyDimension(
-            TypedValue.COMPLEX_UNIT_DIP,
-            marginDp.toFloat(),
-            resources.displayMetrics
-        ).toInt()
-        subtitleView.setPadding(0, 0, 0, marginPx)
+        // Use fractional padding (proportion of view height) instead of absolute dp,
+        // so subtitle position scales correctly regardless of density or letterboxing.
+        // Reference 1080dp to match mpv's OSD coordinate system.
+        val fraction = (marginDp.toFloat() / 1080f).coerceIn(0f, 0.5f)
+        subtitleView.setBottomPaddingFraction(fraction)
     }
 
     /**
