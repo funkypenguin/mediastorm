@@ -11,7 +11,7 @@ const FADE_OUT_DURATION = 400;
 
 type LoadingScreenContextValue = {
   showLoadingScreen: () => void;
-  hideLoadingScreen: () => void;
+  hideLoadingScreen: (options?: { immediate?: boolean }) => void;
   isLoadingScreenVisible: boolean;
   setOnCancel: (callback: (() => void) | null) => void;
 };
@@ -74,20 +74,26 @@ export function LoadingScreenProvider({ children }: LoadingScreenProviderProps) 
     }
   }, [isRendered, opacity]);
 
-  const hideLoadingScreen = useCallback(() => {
+  const hideLoadingScreen = useCallback((options?: { immediate?: boolean }) => {
     wantsVisibleRef.current = false;
     setIsVisible(false);
-    Animated.timing(opacity, {
-      toValue: 0,
-      duration: FADE_OUT_DURATION,
-      useNativeDriver: true,
-    }).start(() => {
-      // Guard: only unmount if still meant to be hidden (avoid race with rapid show/hide)
-      if (!wantsVisibleRef.current) {
-        setIsRendered(false);
-        translateX.setValue(0);
-      }
-    });
+    if (options?.immediate) {
+      opacity.stopAnimation();
+      opacity.setValue(0);
+      setIsRendered(false);
+      translateX.setValue(0);
+    } else {
+      Animated.timing(opacity, {
+        toValue: 0,
+        duration: FADE_OUT_DURATION,
+        useNativeDriver: true,
+      }).start(() => {
+        if (!wantsVisibleRef.current) {
+          setIsRendered(false);
+          translateX.setValue(0);
+        }
+      });
+    }
   }, [translateX, opacity]);
 
   const setOnCancel = useCallback((callback: (() => void) | null) => {

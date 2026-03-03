@@ -29,8 +29,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, AppState, BackHandler, Dimensions, Image, Platform, Pressable, ScrollView, Text, View } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Animated, AppState, BackHandler, Image, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { useTVDimensions } from '@/hooks/useTVDimensions';
 import { useChannelEPG } from '@/hooks/useChannelEPG';
 import { isAndroidTV, isTablet } from '@/theme/tokens/tvScale';
@@ -56,7 +55,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useBackendSettings } from '@/components/BackendSettingsContext';
 import { useLoadingScreen } from '@/components/LoadingScreenContext';
-import StrmrLoadingScreen from '@/app/strmr-loading';
 import { useToast } from '@/components/ToastContext';
 import { useUserProfiles } from '@/components/UserProfilesContext';
 import { useIntroSkip } from '@/hooks/useIntroSkip';
@@ -114,59 +112,7 @@ import { selectBestSubtitle } from '@/utils/subtitle-helpers';
 
 export default function PlayerScreen() {
   const { settings, userSettings, refreshSettings } = useBackendSettings();
-  const { hideLoadingScreen, isLoadingScreenVisible } = useLoadingScreen();
-  // Capture whether the loading screen was active when the player mounted.
-  // The player renders its own embedded loading screen (since the context overlay
-  // sits behind the player's native navigation view). We immediately dismiss
-  // the context overlay and fade out the embedded one when playback starts.
-  const showEmbeddedLoadingRef = useRef(isLoadingScreenVisible);
-  const embeddedLoadingOpacity = useRef(new Animated.Value(1)).current;
-  const embeddedLoadingTranslateX = useRef(new Animated.Value(0)).current;
-  const [embeddedLoadingMounted, setEmbeddedLoadingMounted] = useState(showEmbeddedLoadingRef.current);
-  useEffect(() => {
-    if (showEmbeddedLoadingRef.current) {
-      hideLoadingScreen();
-    }
-  }, [hideLoadingScreen]);
-
-  const dismissEmbeddedLoading = useCallback(() => {
-    setEmbeddedLoadingMounted(false);
-    showEmbeddedLoadingRef.current = false;
-    embeddedLoadingOpacity.setValue(0);
-    embeddedLoadingTranslateX.setValue(0);
-    router.back();
-  }, [embeddedLoadingOpacity, embeddedLoadingTranslateX]);
-
-  const embeddedLoadingSwipe = useMemo(() => {
-    const screenWidth = Dimensions.get('window').width;
-    return Gesture.Pan()
-      .activeOffsetX(10)
-      .onChange((event) => {
-        if (event.translationX > 0) {
-          embeddedLoadingTranslateX.setValue(event.translationX);
-        }
-      })
-      .onEnd((event) => {
-        const screenW = Dimensions.get('window').width;
-        if (event.translationX > screenW * 0.3 || event.velocityX > 500) {
-          Animated.timing(embeddedLoadingTranslateX, {
-            toValue: screenWidth,
-            duration: 200,
-            useNativeDriver: true,
-          }).start(() => {
-            dismissEmbeddedLoading();
-          });
-        } else {
-          Animated.spring(embeddedLoadingTranslateX, {
-            toValue: 0,
-            useNativeDriver: true,
-            damping: 20,
-            stiffness: 300,
-          }).start();
-        }
-      })
-      .runOnJS(true);
-  }, [embeddedLoadingTranslateX, dismissEmbeddedLoading]);
+  const { hideLoadingScreen } = useLoadingScreen();
   const { showToast } = useToast();
   const {
     movie,
@@ -3224,19 +3170,7 @@ export default function PlayerScreen() {
       }
       const timeIsAdvancing = playbackTimeRef.current > 0 &&
         absoluteTime > playbackTimeRef.current + 0.05;
-      if (!hasStartedPlaying && eventCount < 15) {
-        console.log('[player][loading-debug]', {
-          eventCount,
-          time: time.toFixed(3),
-          absoluteTime: absoluteTime.toFixed(3),
-          playbackTime: playbackTimeRef.current.toFixed(3),
-          timeIsAdvancing,
-          isVideoBuffering,
-          pendingSeek: pendingSessionSeekRef.current,
-        });
-      }
       if (!hasStartedPlaying && ((time > 0 && timeIsAdvancing) || isLiveTV)) {
-        console.log('[player][loading-debug] >>> hasStartedPlaying triggered!');
         setHasStartedPlaying(true);
 
         // Resume playback if we paused for seeking or track switching
@@ -3245,16 +3179,8 @@ export default function PlayerScreen() {
           setPaused(false);
         }
 
-        // Fade out embedded loading screen now that playback has started
-        if (showEmbeddedLoadingRef.current) {
-          Animated.timing(embeddedLoadingOpacity, {
-            toValue: 0,
-            duration: 400,
-            useNativeDriver: true,
-          }).start(() => {
-            setEmbeddedLoadingMounted(false);
-          });
-        }
+        // Hide loading screen now that playback has started
+        hideLoadingScreen();
       }
 
       if (meta?.seekable) {
@@ -3337,7 +3263,6 @@ export default function PlayerScreen() {
       isHlsStream,
       isLiveTV,
       applyPendingSessionSeek,
-      embeddedLoadingOpacity,
       paused,
       mediaType,
       shuffleMode,
@@ -6997,21 +6922,6 @@ export default function PlayerScreen() {
           )}
         </View>
       </FixedSafeAreaView>
-      {/* Embedded loading screen — rendered inside the player so it sits above
-          the native navigation view. Starts at full opacity and fades out
-          when playback actually starts. Swipe right to cancel and go back. */}
-      {embeddedLoadingMounted && (
-        <GestureDetector gesture={embeddedLoadingSwipe}>
-          <Animated.View style={{
-            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-            zIndex: 99999,
-            opacity: embeddedLoadingOpacity,
-            transform: [{ translateX: embeddedLoadingTranslateX }],
-          }}>
-            <StrmrLoadingScreen embedded />
-          </Animated.View>
-        </GestureDetector>
-      )}
     </>
   );
 }
