@@ -945,6 +945,7 @@ export default function PlayerScreen() {
 
   const [isSeeking, setIsSeeking] = useState<boolean>(false);
   const [hasStartedPlaying, setHasStartedPlaying] = useState<boolean>(false);
+  const playbackTimeRef = useRef<number>(0); // Tracks first non-zero time for frame advancement detection
   // Cache-busting counter for subtitle URLs - increments after seek to force refetch
   const [subtitleCacheBust, setSubtitleCacheBust] = useState<number>(0);
   // Track HDR content type (Dolby Vision/HDR10) for proper player configuration
@@ -3214,8 +3215,28 @@ export default function PlayerScreen() {
       }
 
       // For live streams (isLiveTV), trigger hasStartedPlaying immediately since time may stay at 0
-      // For regular content, wait for time > 0 to avoid flashing before actual playback
-      if (!hasStartedPlaying && (time > 0 || isLiveTV)) {
+      // For regular content, wait for time to actually advance between progress events.
+      // On resume, the player reports the seek offset immediately but isn't rendering yet.
+      // Requiring 2+ progress events with advancing time ensures frames are actually playing.
+      // Track the last non-zero time to detect actual frame advancement after seek
+      if (absoluteTime > 0 && !playbackTimeRef.current) {
+        playbackTimeRef.current = absoluteTime;
+      }
+      const timeIsAdvancing = playbackTimeRef.current > 0 &&
+        absoluteTime > playbackTimeRef.current + 0.05;
+      if (!hasStartedPlaying && eventCount < 15) {
+        console.log('[player][loading-debug]', {
+          eventCount,
+          time: time.toFixed(3),
+          absoluteTime: absoluteTime.toFixed(3),
+          playbackTime: playbackTimeRef.current.toFixed(3),
+          timeIsAdvancing,
+          isVideoBuffering,
+          pendingSeek: pendingSessionSeekRef.current,
+        });
+      }
+      if (!hasStartedPlaying && ((time > 0 && timeIsAdvancing) || isLiveTV)) {
+        console.log('[player][loading-debug] >>> hasStartedPlaying triggered!');
         setHasStartedPlaying(true);
 
         // Resume playback if we paused for seeking or track switching
