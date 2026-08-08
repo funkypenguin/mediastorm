@@ -30,6 +30,7 @@
 
 ## Testing
 
+- In Progress Testing — Scrob integration: link a writable Scrob account in Profile Scrobbling and confirm newly completed movies and episodes are pushed with their watched timestamps. Confirm active playback appears in Scrob Now Playing, pause/resume and progress update, and stop/completion clears the session. Then run Scrob → Local, Local → Scrob, and bidirectional history automations; confirm TMDB/show coordinates survive, repeat runs do not create duplicate remote plays, and a recent local unwatch removes the corresponding Scrob item. For 2FA accounts, verify live profile pushes and scheduled sync generate valid rotating codes.
 - In Progress Testing — Discord partial-progress notifications are deleted after unfinished playback stops, including overlapping sessions, temporary Discord failures, and backend restarts; verify no 0% or partial episode message remains after the two-minute stale timeout
 - In Progress Testing — Android Live TV no longer trusts the redacted client settings shape to decide whether channels exist: verify the affected non-master profile loads channels, and collect a fresh log package if it still fails so the new `[live-channels]` request/settings-shape diagnostics can be compared
 - In Progress Testing — Dashboard uses explicit player source metadata: verify AIOStreams/Comet HTTP playback shows Debrid, Usenet WebDAV playback shows Usenet, and legacy clients still fall back to path classification
