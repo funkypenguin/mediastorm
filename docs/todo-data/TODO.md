@@ -24,13 +24,13 @@
 - Scrob support
 - stream codes not auto populating EPG
 - MacOS sizing issues (likely iPad as well)
-- Notifications lingering in discord
 - Voice search not working on android
 
 ---
 
 ## Testing
 
+- In Progress Testing — Discord partial-progress notifications are deleted after unfinished playback stops, including overlapping sessions, temporary Discord failures, and backend restarts; verify no 0% or partial episode message remains after the two-minute stale timeout
 - In Progress Testing — Dashboard uses explicit player source metadata: verify AIOStreams/Comet HTTP playback shows Debrid, Usenet WebDAV playback shows Usenet, and legacy clients still fall back to path classification
 - In Progress Testing — Dashboard shelf live TV cards use the active channel logo and selecting one starts that channel through the same playback flow as Favorite Channels
 - In Progress Testing — Fire TV/Android TV press-and-hold voice search diagnostics added; capture `VoiceSearchDiag`, `VoiceSearch`, and `ReactNativeJS` with ADB while reproducing on the Search page
