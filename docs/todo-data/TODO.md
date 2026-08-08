@@ -31,7 +31,7 @@
 
 ## Testing
 
-- In Progress Testing — Dashboard identifies pre-resolved HTTP streams from AIOStreams and Comet as Debrid instead of Usenet
+- In Progress Testing — Dashboard uses explicit player source metadata: verify AIOStreams/Comet HTTP playback shows Debrid, Usenet WebDAV playback shows Usenet, and legacy clients still fall back to path classification
 - In Progress Testing — Dashboard shelf live TV cards use the active channel logo and selecting one starts that channel through the same playback flow as Favorite Channels
 - In Progress Testing — Fire TV/Android TV press-and-hold voice search diagnostics added; capture `VoiceSearchDiag`, `VoiceSearch`, and `ReactNativeJS` with ADB while reproducing on the Search page
 - In Progress Testing — Apple TV screensaver/background exit saves the latest playback position before returning to details; also verify resuming from the saved position on multiple Apple TV devices
