@@ -29,6 +29,7 @@
 
 ## Testing
 
+- In Progress Testing — Admin maintenance template navigation: open Server → Maintenance with and without an enabled prewarm automation, verify Prequeue Management is always visible and opens Active Prequeues, then verify Hidden Items, Bad Streams, Resolved NZBs, and Share Links open and each subpage can return to Maintenance
 - In Progress Testing — Released episode searches retry empty text-based providers with a season-scoped query: verify Captain Star S01E01 discovers the `S01-S02 Complete` Jackett result, providers that return an exact episode do not make a fallback request, and future/unreleased episodes do not run a season fallback
 - In Progress Testing — Scrob integration: link a writable Scrob account in Profile Scrobbling and confirm newly completed movies and episodes are pushed with their watched timestamps. Confirm active playback appears in Scrob Now Playing, pause/resume and progress update, and stop/completion clears the session. Then run Scrob → Local, Local → Scrob, and bidirectional history automations; confirm TMDB/show coordinates survive, repeat runs do not create duplicate remote plays, and a recent local unwatch removes the corresponding Scrob item. For 2FA accounts, verify live profile pushes and scheduled sync generate valid rotating codes.
 - In Progress Testing — Discord partial-progress notifications are deleted after unfinished playback stops, including overlapping sessions, temporary Discord failures, and backend restarts; verify no 0% or partial episode message remains after the two-minute stale timeout
