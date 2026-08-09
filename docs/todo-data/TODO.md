@@ -28,6 +28,7 @@
 
 ## Testing
 
+- In Progress Testing — Permanent Prequeue shelf: confirm it is disabled by default in existing and new profile home-shelf settings, enabling it shows only that profile's manual forever items in newest-first order, removing an item updates the shelf, and Discovery → Lists opens the same list even while the home shelf is disabled
 - In Progress Testing — Manual “Prequeue forever”: add movies and series from Details → More Options, Home/index long-press, and Watchlist long-press; confirm an already-active details prequeue is adopted without duplicate resolution, the item survives its normal TTL and a backend restart, playback reuses it, and the admin Active Prequeues page labels it `MANUAL · FOREVER` and can remove it individually or via Clear All
 - In Progress Testing — Admin maintenance template navigation: open Server → Maintenance with and without an enabled prewarm automation, verify Prequeue Management is always visible and opens Active Prequeues, then verify Hidden Items, Bad Streams, Resolved NZBs, and Share Links open and each subpage can return to Maintenance
 - In Progress Testing — Released episode searches retry empty text-based providers with a season-scoped query: verify Captain Star S01E01 discovers the `S01-S02 Complete` Jackett result, providers that return an exact episode do not make a fallback request, and future/unreleased episodes do not run a season fallback
