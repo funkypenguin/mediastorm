@@ -2066,6 +2066,9 @@ func (h *LiveHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 	includeSourceInID := len(sources) > 1
 	totalBeforeFilter := 0
 	for _, liveSource := range selectedSources {
+		if request.FavoritesOnly && !liveSourceMayContainFavorites(liveSource.ID, request.FavoriteIDs, includeSourceInID) {
+			continue
+		}
 		sourceFilter := filter
 		if liveSource.HasFilterOverride {
 			sourceFilter = liveSource.Filter
@@ -2314,4 +2317,16 @@ func (h *LiveHandler) GetCategories(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("[live] GetCategories JSON encode error: %v", err)
 	}
+}
+
+// Favorites use source-prefixed IDs in multi-source catalogs. Avoid contacting
+// unrelated providers just to discard their entire catalogs afterward.
+func liveSourceMayContainFavorites(sourceID string, favoriteIDs []string, includeSourceInID bool) bool {
+	for _, id := range favoriteIDs {
+		id = strings.TrimSpace(id)
+		if id != "" && (!includeSourceInID || sourceID == "" || strings.HasPrefix(id, sourceID+":")) {
+			return true
+		}
+	}
+	return false
 }

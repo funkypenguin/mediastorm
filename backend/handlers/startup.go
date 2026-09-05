@@ -942,12 +942,23 @@ func (h *StartupHandler) Options(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *StartupHandler) buildStartupHomeShelves(ctx context.Context, sourceReq *http.Request, userID string, shelves []models.ShelfConfig, homeShelfLimit int, hideWatched bool, clientID string) (map[string]StartupHomeShelfResponse, map[string]string) {
+	if h.displayList == nil {
+		return nil, nil
+	}
+	return buildStartupHomeShelvesWithHandler(ctx, sourceReq, userID, shelves, homeShelfLimit, hideWatched, clientID, h.displayList.Get)
+}
+
+func buildStartupHomeShelvesWithHandler(ctx context.Context, sourceReq *http.Request, userID string, shelves []models.ShelfConfig, homeShelfLimit int, hideWatched bool, clientID string, get http.HandlerFunc) (map[string]StartupHomeShelfResponse, map[string]string) {
 	out := make(map[string]StartupHomeShelfResponse)
 	errs := make(map[string]string)
-	if h.displayList == nil || len(shelves) == 0 {
-		return out, errs
+	type result struct {
+		id       string
+		response StartupHomeShelfResponse
+		err      string
 	}
-
+	results := make(chan result, len(shelves))
+	slots := make(chan struct{}, 4)
+	pending := make(map[string]bool)
 	for _, shelf := range shelves {
 		if !shelf.Enabled || !isStartupFetchableCustomShelf(shelf) {
 			continue
@@ -956,37 +967,60 @@ func (h *StartupHandler) buildStartupHomeShelves(ctx context.Context, sourceReq 
 		if !ok {
 			continue
 		}
-		req := sourceReq.Clone(ctx)
-		req.Method = http.MethodGet
-		req.URL = &url.URL{
-			Path:     "/api/users/" + url.PathEscape(userID) + "/display-list",
-			RawQuery: query.Encode(),
-		}
-		req = mux.SetURLVars(req, map[string]string{"userID": userID})
-		rec := httptest.NewRecorder()
-		h.displayList.Get(rec, req)
-		if rec.Code >= http.StatusBadRequest {
-			message := strings.TrimSpace(rec.Body.String())
-			if message == "" {
-				message = http.StatusText(rec.Code)
+		pending[shelf.ID] = true
+		go func(id string, query url.Values) {
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				return
 			}
-			errs[shelf.ID] = message
-			continue
-		}
-		var response StartupHomeShelfResponse
-		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
-			errs[shelf.ID] = err.Error()
-			continue
-		}
-		if response.Items == nil {
-			response.Items = []models.TrendingItem{}
-		}
-		if response.Total == 0 && len(response.Items) > 0 {
-			response.Total = len(response.Items)
-		}
-		out[shelf.ID] = response
+			defer func() { <-slots }()
+			if ctx.Err() != nil {
+				return
+			}
+			req := sourceReq.Clone(ctx)
+			req.Method = http.MethodGet
+			req.URL = &url.URL{Path: "/api/users/" + url.PathEscape(userID) + "/display-list", RawQuery: query.Encode()}
+			req = mux.SetURLVars(req, map[string]string{"userID": userID})
+			rec := httptest.NewRecorder()
+			get(rec, req)
+			item := result{id: id}
+			if rec.Code >= http.StatusBadRequest {
+				item.err = strings.TrimSpace(rec.Body.String())
+				if item.err == "" {
+					item.err = http.StatusText(rec.Code)
+				}
+			} else if err := json.NewDecoder(rec.Body).Decode(&item.response); err != nil {
+				item.err = err.Error()
+			} else {
+				if item.response.Items == nil {
+					item.response.Items = []models.TrendingItem{}
+				}
+				if item.response.Total == 0 {
+					item.response.Total = len(item.response.Items)
+				}
+			}
+			results <- item
+		}(shelf.ID, query)
 	}
-
+	// Only this goroutine owns response maps. Buffered results let handlers that
+	// ignore cancellation finish safely without extending the startup deadline.
+	for len(pending) > 0 {
+		select {
+		case item := <-results:
+			delete(pending, item.id)
+			if item.err != "" {
+				errs[item.id] = item.err
+			} else {
+				out[item.id] = item.response
+			}
+		case <-ctx.Done():
+			for id := range pending {
+				errs[id] = ctx.Err().Error()
+			}
+			return out, errs
+		}
+	}
 	return out, errs
 }
 
