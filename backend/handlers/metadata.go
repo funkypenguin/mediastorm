@@ -2544,6 +2544,19 @@ func (h *MetadataHandler) TopTen(w http.ResponseWriter, r *http.Request) {
 }
 
 func selectTopTenResponseItems(items []models.TrendingItem, mediaType string) []models.TrendingItem {
+	// Filter before limiting so incomplete cached candidates do not consume slots.
+	eligible := make([]models.TrendingItem, 0, len(items))
+	for _, item := range items {
+		title := item.Title
+		if title.Poster == nil || strings.TrimSpace(title.Poster.URL) == "" {
+			continue
+		}
+		if title.TMDBID <= 0 && title.TVDBID <= 0 && strings.TrimSpace(title.IMDBID) == "" {
+			continue
+		}
+		eligible = append(eligible, item)
+	}
+	items = eligible
 	normalized := strings.ToLower(strings.TrimSpace(mediaType))
 	if normalized != "" && normalized != "all" {
 		limit := minInt(10, len(items))

@@ -1045,9 +1045,9 @@ func TestMetadataHandler_SearchKidsContentListReturnsEmpty(t *testing.T) {
 func TestMetadataHandler_TopTenKidsRatingFilters(t *testing.T) {
 	fake := &fakeMetadataService{
 		trendingResp: []models.TrendingItem{
-			{Title: models.Title{Name: "Kids Movie", MediaType: "movie", Certification: "G"}},
-			{Title: models.Title{Name: "Adult Movie", MediaType: "movie", Certification: "R"}},
-			{Title: models.Title{Name: "Unrated Movie", MediaType: "movie"}},
+			{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Kids Movie", MediaType: "movie", Certification: "G"}},
+			{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Adult Movie", MediaType: "movie", Certification: "R"}},
+			{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Unrated Movie", MediaType: "movie"}},
 		},
 	}
 	handler := NewMetadataHandler(fake, testConfigManager(t))
@@ -1077,8 +1077,8 @@ func TestMetadataHandler_TopTenKidsRatingFilters(t *testing.T) {
 func TestMetadataHandler_TopTenNoFilterForAdult(t *testing.T) {
 	fake := &fakeMetadataService{
 		trendingResp: []models.TrendingItem{
-			{Title: models.Title{Name: "Kids Movie", MediaType: "movie", Certification: "G"}},
-			{Title: models.Title{Name: "Adult Movie", MediaType: "movie", Certification: "R"}},
+			{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Kids Movie", MediaType: "movie", Certification: "G"}},
+			{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Adult Movie", MediaType: "movie", Certification: "R"}},
 		},
 	}
 	handler := NewMetadataHandler(fake, testConfigManager(t))
@@ -2183,8 +2183,8 @@ func TestMetadataHandler_BatchSeriesDetails_EmptyFields(t *testing.T) {
 
 func TestMetadataHandler_TopTen(t *testing.T) {
 	items := []models.TrendingItem{
-		{Rank: 1, Title: models.Title{Name: "Inception", MediaType: "movie", IMDBID: "tt1375666", Popularity: 90}},
-		{Rank: 2, Title: models.Title{Name: "Breaking Bad", MediaType: "series", IMDBID: "tt0903747", Popularity: 85}},
+		{Rank: 1, Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Inception", MediaType: "movie", IMDBID: "tt1375666", Popularity: 90}},
+		{Rank: 2, Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Breaking Bad", MediaType: "series", IMDBID: "tt0903747", Popularity: 85}},
 	}
 	fake := &fakeMetadataService{trendingResp: items}
 	handler := NewMetadataHandler(fake, testConfigManager(t))
@@ -2219,10 +2219,10 @@ func TestMetadataHandler_TopTenFiltersUnreleasedByListPolicy(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 	items := []models.TrendingItem{
-		{Rank: 1, Title: models.Title{Name: "Toy Story 2", MediaType: "movie", Year: 1999}},
-		{Rank: 2, Title: models.Title{Name: "Toy Story 5", MediaType: "movie", Year: time.Now().Year() + 1}},
-		{Rank: 3, Title: models.Title{Name: "Released Show", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
-		{Rank: 4, Title: models.Title{Name: "Unreleased Show", MediaType: "series", Status: models.SeriesReleaseStatusUnreleased}},
+		{Rank: 1, Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Toy Story 2", MediaType: "movie", Year: 1999}},
+		{Rank: 2, Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Toy Story 5", MediaType: "movie", Year: time.Now().Year() + 1}},
+		{Rank: 3, Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Released Show", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
+		{Rank: 4, Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Unreleased Show", MediaType: "series", Status: models.SeriesReleaseStatusUnreleased}},
 	}
 	fake := &fakeMetadataService{trendingResp: items}
 	handler := NewMetadataHandler(fake, cfg)
@@ -2258,18 +2258,18 @@ func TestMetadataHandler_TopTenBackfillsAfterVisibilityFiltering(t *testing.T) {
 	}
 
 	items := []models.TrendingItem{
-		{Title: models.Title{Name: "Future Movie", MediaType: "movie", Status: models.MovieReleaseStatusUpcoming}},
-		{Title: models.Title{Name: "Movie 1", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
-		{Title: models.Title{Name: "Movie 2", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
-		{Title: models.Title{Name: "Movie 3", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
-		{Title: models.Title{Name: "Movie 4", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
-		{Title: models.Title{Name: "Movie 5", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
-		{Title: models.Title{Name: "Future Show", MediaType: "series", Status: models.SeriesReleaseStatusUnreleased}},
-		{Title: models.Title{Name: "Show 1", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
-		{Title: models.Title{Name: "Show 2", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
-		{Title: models.Title{Name: "Show 3", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
-		{Title: models.Title{Name: "Show 4", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
-		{Title: models.Title{Name: "Show 5", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Future Movie", MediaType: "movie", Status: models.MovieReleaseStatusUpcoming}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Movie 1", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Movie 2", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Movie 3", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Movie 4", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Movie 5", MediaType: "movie", Status: models.MovieReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Future Show", MediaType: "series", Status: models.SeriesReleaseStatusUnreleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Show 1", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Show 2", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Show 3", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Show 4", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
+		{Title: models.Title{TMDBID: 1, Poster: &models.Image{URL: "https://image.tmdb.org/t/p/w500/poster.jpg"}, Name: "Show 5", MediaType: "series", Status: models.SeriesReleaseStatusReleased}},
 	}
 	handler := NewMetadataHandler(&fakeMetadataService{trendingResp: items}, cfg)
 	req := httptest.NewRequest(http.MethodGet, "/api/discover/top-ten?type=all", nil)
